@@ -117,6 +117,7 @@ int main(int argc, const char ** argv)
 	int numcalread = 0;
 	double * shorttermaveragedarray;
 	int numbershortperiods;
+	int parameterstate = 0;
 	// This is a requirement of sndfile library, do not forget it.
 
 	memset(&sfinfo, 0, sizeof(sfinfo));
@@ -140,7 +141,7 @@ int main(int argc, const char ** argv)
 	    return 1;
 	  }
 	  
-	  //file = SndfileHandle(argv[in]);
+
 	     fileopenstate = 1;
 	     printf("Opened file: %s\n", argv[in]);
 	     printf("Sample rate: %d\n", sfinfo.samplerate);
@@ -224,10 +225,14 @@ int main(int argc, const char ** argv)
 	     continue;
 	
       }
+
+					if (parameterstate==0) {
+					  break;
+					}
     }
 // Open audio file
 
-
+//postprocessing parameters
     if (numcalread == sfinfo.channels) {
       for (int cind = 0; cind < sfinfo.channels; cind++) {
 	channelconfcalvector[cind] = convloglin_single(tempchcal[cind]);
