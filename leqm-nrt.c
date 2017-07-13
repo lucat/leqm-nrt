@@ -118,6 +118,7 @@ int main(int argc, const char ** argv)
 	double * shorttermaveragedarray;
 	int numbershortperiods;
 	int parameterstate = 0;
+	int leqnw = 0;
 	// This is a requirement of sndfile library, do not forget it.
 
 	memset(&sfinfo, 0, sizeof(sfinfo));
@@ -214,6 +215,14 @@ int main(int argc, const char ** argv)
 		leqmlog = 1;
 	     in++;
 	     printf("Leq(M)10 data will be logged in the file leqmlog.txt\n");
+	     continue;
+	
+      }
+
+	     	      	      	      if (strcmp(argv[in], "-leqnw") == 0) {
+		leqnw = 1;
+	     in++;
+	     printf("Leq(nW) - unweighted -  will be outputted.\n");
 	     continue;
 	
       }
@@ -470,7 +479,9 @@ int main(int argc, const char ** argv)
  // mean of scalar sum over duration
  
  meanoverduration(totsum);
+ if (leqnw) {
  printf("Leq(noW): %.4f\n", totsum->rms); // Leq(no Weighting)
+ }
  printf("Leq(M): %.4f\n", totsum->leqm);
 
   if(timing) {
@@ -868,10 +879,8 @@ int meanoverduration(struct Sum * oldsum) {
    oldsum->leqm = 20*log10(oldsum->cmean) + 110.600;//  
      // and this must be right because M filter is -5.6 @ 1k Hz that is -25.6 dBFS and to have 85.0 as reference level we must add 25.56 + 85.00 that is 110.6 dB.
    //this value is obtained calibrating with a -20 dBFS Dolby Tone (RMS) I think this is correct
-     // + 113.6191; //this value is obtained calibrating with a -20 dBFS Dolby Tone
    //But ISO 21727:2004(E) ask for a reference level "measured using an average responding meter". So reference level is not 0.707, but 0.637 = 2/pi
-   //But this is only approximate as you should use a separate calibration according to the Dolby Format. Also for SW
-   //the tone should be 100Hz
+   //This is only approximate as you should use a separate calibration according to the Dolby Format. Also for SW the tone should be 100Hz (?)
 
 return 0;
 }
