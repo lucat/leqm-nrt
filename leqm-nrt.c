@@ -147,7 +147,7 @@ int main(int argc, const char ** argv)
 	     printf("Channels: %d\n", sfinfo.channels);
 	     printf("Format: %d\n", sfinfo.format);
 	     printf("Frames: %d\n", sfinfo.frames);
-	     channelconfcalvector = (double *)malloc(sizeof(double) * sfinfo.channels);
+	     channelconfcalvector = malloc(sizeof(double) * sfinfo.channels);
 	     in++;
 	     continue;
 	} else {
@@ -300,7 +300,7 @@ int main(int argc, const char ** argv)
  }
  
   buffersizesamples = (sfinfo.samplerate*sfinfo.channels*buffersizems)/1000;
-  buffer = (double *) malloc(sizeof(double)*buffersizesamples);
+  buffer = malloc(sizeof(double)*buffersizesamples);
 
  samplingfreq = sfinfo.samplerate;
 
@@ -332,14 +332,14 @@ int main(int argc, const char ** argv)
   double freqresp_db[] = {-35.5, -29.5, -25.4, -19.4, -13.4, -7.5, -5.6, 0.0, 3.4, 4.9, 6.1, 6.6, 6.4, 5.8, 4.5, 2.5, -5.6, -10.9, -17.3, -27.8, -48.3};
   
   double * eqfreqresp_db;
-  eqfreqresp_db = (double *) malloc(sizeof(*eqfreqresp_db)*npoints);
+  eqfreqresp_db = malloc(sizeof(*eqfreqresp_db)*npoints);
 
   double * eqfreqsamples;
-  eqfreqsamples = (double *) malloc(sizeof(*eqfreqsamples)*npoints);
+  eqfreqsamples = malloc(sizeof(*eqfreqsamples)*npoints);
   double * eqfreqresp;
-  eqfreqresp = (double *) malloc(sizeof(*eqfreqresp)*npoints);
+  eqfreqresp = malloc(sizeof(*eqfreqresp)*npoints);
   double * ir;
-  ir = (double *) malloc(sizeof(*ir)*npoints*2);
+  ir = malloc(sizeof(*ir)*npoints*2);
 
 
 // And what to do for floating point sample coding?
@@ -380,7 +380,7 @@ int main(int argc, const char ** argv)
 // read through the entire file
 
    struct Sum * totsum;
-    totsum = (struct Sum *) malloc(sizeof(struct Sum));
+    totsum = malloc(sizeof(struct Sum));
     totsum->csum = 0.0;
     totsum->sum = 0.0;
     totsum->nsamples = 0;
@@ -395,13 +395,13 @@ int main(int argc, const char ** argv)
  int worker_id = 0;
  pthread_t tid[numCPU];
  struct WorkerArgs ** WorkerArgsArray;
- WorkerArgsArray = (struct WorkerArgs **) malloc(sizeof(struct WorkerArgs *)*numCPU);
+ WorkerArgsArray = malloc(sizeof(struct WorkerArgs *)*numCPU);
  int staindex = 0; //shorttermarrayindex
 
 
  while((samples_read = sf_read_double(file, buffer, buffersizesamples)) > 0) {
 
-   WorkerArgsArray[worker_id]=(struct WorkerArgs *) malloc(sizeof(struct WorkerArgs));
+   WorkerArgsArray[worker_id]=malloc(sizeof(struct WorkerArgs));
    WorkerArgsArray[worker_id]->nsamples = samples_read;
    WorkerArgsArray[worker_id]->nch = sfinfo.channels;
    WorkerArgsArray[worker_id]->npoints=npoints;
@@ -418,7 +418,7 @@ int main(int argc, const char ** argv)
      WorkerArgsArray[worker_id]->leqm10flag = 0;
    }
 
-   WorkerArgsArray[worker_id]->argbuffer = (double *) malloc(sizeof(double)*buffersizesamples); 
+   WorkerArgsArray[worker_id]->argbuffer = malloc(sizeof(double)*buffersizesamples); 
    memcpy(WorkerArgsArray[worker_id]->argbuffer, buffer, samples_read*sizeof(double));
    
 
@@ -562,14 +562,14 @@ void * worker_function(void * argstruct) {
   double * chsumaccumulator_conv;
   
 
-  sumandsquarebuffer = (double *) malloc(sizeof(double)*(thisWorkerArgs->nsamples / thisWorkerArgs->nch));
+  sumandsquarebuffer = malloc(sizeof(double)*(thisWorkerArgs->nsamples / thisWorkerArgs->nch));
   
 
-  csumandsquarebuffer = (double *) malloc(sizeof(double)*(thisWorkerArgs->nsamples / thisWorkerArgs->nch));
+  csumandsquarebuffer = malloc(sizeof(double)*(thisWorkerArgs->nsamples / thisWorkerArgs->nch));
 
-  chsumaccumulator_norm = (double *) malloc(sizeof(double)*(thisWorkerArgs->nsamples / thisWorkerArgs->nch));
+  chsumaccumulator_norm = malloc(sizeof(double)*(thisWorkerArgs->nsamples / thisWorkerArgs->nch));
 
-  chsumaccumulator_conv = (double *)  malloc(sizeof(double)*(thisWorkerArgs->nsamples / thisWorkerArgs->nch));
+  chsumaccumulator_conv = malloc(sizeof(double)*(thisWorkerArgs->nsamples / thisWorkerArgs->nch));
 
 
 
@@ -588,9 +588,9 @@ void * worker_function(void * argstruct) {
     double * convolvedbuffer;
 
 
-    normalizedbuffer = (double *) malloc(sizeof(double)*(thisWorkerArgs->nsamples / thisWorkerArgs->nch));
+    normalizedbuffer = malloc(sizeof(double)*(thisWorkerArgs->nsamples / thisWorkerArgs->nch));
 
-    convolvedbuffer = (double *) malloc(sizeof(double)*(thisWorkerArgs->nsamples / thisWorkerArgs->nch));
+    convolvedbuffer = malloc(sizeof(double)*(thisWorkerArgs->nsamples / thisWorkerArgs->nch));
     
 
     for (int n=ch, m= 0; n < thisWorkerArgs->nsamples; n += thisWorkerArgs->nch, m++) {
