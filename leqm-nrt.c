@@ -119,6 +119,8 @@ int main(int argc, const char ** argv)
 	int numbershortperiods;
 	int parameterstate = 0;
 	int leqnw = 0;
+
+	char soundfilename[64];
 	// This is a requirement of sndfile library, do not forget it.
 
 	memset(&sfinfo, 0, sizeof(sfinfo));
@@ -142,7 +144,7 @@ int main(int argc, const char ** argv)
 	    return 1;
 	  }
 	  
-
+	  strcpy(soundfilename, argv[in]);
 	     fileopenstate = 1;
 	     printf("Opened file: %s\n", argv[in]);
 	     printf("Sample rate: %d\n", sfinfo.samplerate);
@@ -162,11 +164,11 @@ int main(int argc, const char ** argv)
 
       if (strcmp(argv[in], "-chconfcal") == 0) {
 	/* as the order of parameter is free I have to postpone 
-	   the check for consistency with the number of channel.
+	   the check for consistency with the number of channels.
 	   So first create a temporary array, whose number of element will be checked after 
 	   the parsing of the command line parameters is finished. 
 	   The calibration will be expressed in dB on the command line and converted to multiplier 
-	   here so that it can be stored as a factor in the channelconcalvector.
+	   here so that it can be stored as a factor in the channelconfcalvector.
 	*/
 
 	in++;
@@ -207,14 +209,14 @@ int main(int argc, const char ** argv)
 	      	      if (strcmp(argv[in], "-logleqm10") == 0) {
 		leqm10 = 1;
 	     in++;
-	     printf("Leq(M)10 data will be logged in the file leqm10.txt\n");
+	     printf("Leq(M)10 data will be logged to the file leqm10.txt\n");
 	     continue;
 	
       }
 		      	      	      if (strcmp(argv[in], "-logleqm") == 0) {
 		leqmlog = 1;
 	     in++;
-	     printf("Leq(M)10 data will be logged in the file leqmlog.txt\n");
+	     printf("Leq(M) data will be logged to the file leqmlog.txt\n");
 	     continue;
 	
       }
@@ -267,24 +269,25 @@ int main(int argc, const char ** argv)
 
 
     if (leqm10) {
-
-     leqm10logfile = fopen("leqm10.txt", "w");
+      char tempstring[128];
+      strcpy(tempstring, soundfilename);
+      strcat(tempstring, ".leqm10.txt");
+      leqm10logfile = fopen(tempstring, "w");
       if (leqm10logfile == NULL) {
 	printf("Could not open file to write log leqm10 data!\n");
-	
       }
-      
     }
 
 
 
 
     if (leqmlog) {
-
-     leqmlogfile = fopen("leqmlog.txt", "w");
+      char tempstring[128];
+      strcpy(tempstring, soundfilename);
+      strcat(tempstring, ".leqmlog.txt");
+      leqmlogfile = fopen(tempstring, "w");
       if (leqmlogfile == NULL) {
-	printf("Could not open file to write log leqm data!\n");
-	
+	printf("Could not open file to write log leqm data!\n");	
       }
     }
     
