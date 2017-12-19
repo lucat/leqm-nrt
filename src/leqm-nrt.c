@@ -32,7 +32,7 @@
 #include <stdlib.h>
 #include <time.h>
 #include <ctype.h>
-
+#include <iso646.h>
 
 // Version 0.0.17 (C) Luca Trisciani 2011-2013, 2017
 // Tool from the DCP-Werkstatt Software Bundle
@@ -103,7 +103,14 @@ int main(int argc, const char ** argv)
   int fileopenstate = 0;
   int leqm10 = 0;
   int leqmlog = 0;
+  #if defined __unix__ || defined  __APPLE__
   int numCPU = sysconf(_SC_NPROCESSORS_ONLN) - 1;
+  #elif defined _WIN64 || defined _WIN32
+  SYSTEM_INFO sysinfo;
+  GetSystemInfo(&sysinfo);
+  int numCPU = sysinfo.dwNumberOfProcessors - 1;
+  #endif
+
   double * channelconfcalvector;
   channelconfcalvector = NULL;
   printf("leqm-nrt  Copyright (C) 2011-2013, 2017 Luca Trisciani\nThis program comes with ABSOLUTELY NO WARRANTY; for details on command line parameters -help\nThis is free software, and you are welcome to redistribute it\nunder the GPL v3 licence.\nProgram will use 1 + %d slave threads.\n", numCPU);

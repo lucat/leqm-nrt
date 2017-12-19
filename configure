@@ -4188,7 +4188,7 @@ fi
 done
 
 
-for ac_header in stdlib.h nistd.h stdio.h math.h sndfile.h unistd.h pthread.h string.h time.h ctype.h
+for ac_header in stdlib.h nistd.h stdio.h math.h sndfile.h unistd.h pthread.h string.h time.h ctype.h iso646.h
 do :
   as_ac_Header=`$as_echo "ac_cv_header_$ac_header" | $as_tr_sh`
 ac_fn_c_check_header_mongrel "$LINENO" "$ac_header" "$as_ac_Header" "$ac_includes_default"
