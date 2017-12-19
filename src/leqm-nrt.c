@@ -34,6 +34,14 @@
 #include <ctype.h>
 #include <iso646.h>
 
+#ifdef _WIN32
+#include <windows.h>
+#elif __APPLE__
+#include <sys/param.h>
+#include <sys/sysctl.h
+#endif
+
+
 // Version 0.0.17 (C) Luca Trisciani 2011-2013, 2017
 // Tool from the DCP-Werkstatt Software Bundle
 
