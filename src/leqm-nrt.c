@@ -327,7 +327,7 @@ int main(int argc, const char ** argv)
  */
  double * buffer;
  // buffer = new double [BUFFER_LEN];
- buffersizesamples = (sfinfo.samplerate*sfinfo.channels*buffersizems)/1000;
+ //buffersizesamples = (sfinfo.samplerate*sfinfo.channels*buffersizems)/1000;
  if ((sfinfo.samplerate*buffersizems)%1000) {
    printf("Please fine tune the buffersize according to the sample rate\n");
    //close file
@@ -469,6 +469,8 @@ int main(int argc, const char ** argv)
        //maybe here wait for all cores to output before going on
        for (int idxcpu = 0; idxcpu < numCPU; idxcpu++) {
        pthread_join(tid[idxcpu], NULL);
+      free(WorkerArgsArray[idxcpu]->argbuffer);
+      WorkerArgsArray[idxcpu]->argbuffer = NULL;
        free(WorkerArgsArray[idxcpu]);
        WorkerArgsArray[idxcpu] = NULL;
        }
@@ -490,6 +492,8 @@ int main(int argc, const char ** argv)
  if (worker_id != 0) { // worker_id = 0 means the number of samples was divisible through the number of cpus
    for (int idxcpu = 0; idxcpu < worker_id; idxcpu++) { //worker_id is at this point one unit more than threads launched
      pthread_join(tid[idxcpu], NULL);
+     free(WorkerArgsArray[idxcpu]->argbuffer);
+     WorkerArgsArray[idxcpu]->argbuffer = NULL;
      free(WorkerArgsArray[idxcpu]);
      WorkerArgsArray[idxcpu] = NULL;
    }
