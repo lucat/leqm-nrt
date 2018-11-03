@@ -4,7 +4,7 @@
     "Cinematography -- Method of measurement of perceived
     loudness of motion-picture audio material"
 
-    Copyright (C) 2011-2013, 2017 Luca Trisciani
+    Copyright (C) 2011-2013, 2017-2018 Luca Trisciani
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -42,7 +42,7 @@
 #endif
 
 
-// Version 0.0.17 (C) Luca Trisciani 2011-2013, 2017
+// Version 0.0.18 (C) Luca Trisciani 2011-2013, 2017-2018
 // Tool from the DCP-Werkstatt Software Bundle
 
 
@@ -121,7 +121,7 @@ int main(int argc, const char ** argv)
 
   double * channelconfcalvector;
   channelconfcalvector = NULL;
-  printf("leqm-nrt  Copyright (C) 2011-2013, 2017 Luca Trisciani\nThis program comes with ABSOLUTELY NO WARRANTY; for details on command line parameters -help\nThis is free software, and you are welcome to redistribute it\nunder the GPL v3 licence.\nProgram will use 1 + %d slave threads.\n", numCPU);
+  printf("leqm-nrt  Copyright (C) 2011-2013, 2017-2018 Luca Trisciani\nThis program comes with ABSOLUTELY NO WARRANTY.\nThis is free software, and you are welcome to redistribute it\nunder the GPL v3 licence.\nProgram will use 1 + %d slave threads.\n", numCPU);
   //SndfileHandle file;
   SNDFILE *file;
   file=NULL;
@@ -208,6 +208,14 @@ int main(int argc, const char ** argv)
 	     npoints = atoi(argv[in + 1]);
 	     in+=2;
 	     printf("Convolution points sets to %d.\n", npoints);
+	     continue;
+	
+      }
+	    
+	    
+	        if (strcmp(argv[in], "-version") == 0) {
+	     in++;
+	     printf("leqm-nrt version 0.18\n", npoints);
 	     continue;
 	
       }
