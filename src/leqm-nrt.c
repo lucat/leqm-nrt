@@ -903,11 +903,9 @@ int meanoverduration(struct Sum * oldsum) {
   oldsum->mean = pow(oldsum->sum / ((double) oldsum->nsamples), 0.500);
    oldsum->cmean = pow(oldsum->csum / ((double) oldsum->nsamples), 0.500);
    oldsum->rms = 20*log10(oldsum->mean);
-   oldsum->leqm = 20*log10(oldsum->cmean) + 110.600;//  
-     // and this must be right because M filter is -5.6 @ 1k Hz that is -25.6 dBFS and to have 85.0 as reference level we must add 25.56 + 85.00 that is 110.6 dB.
-   //this value is obtained calibrating with a -20 dBFS Dolby Tone (RMS) I think this is correct
-   //But ISO 21727:2004(E) ask for a reference level "measured using an average responding meter". So reference level is not 0.707, but 0.637 = 2/pi
-   //This is only approximate as you should use a separate calibration according to the Dolby Format. Also for SW the tone should be 100Hz (?)
+   oldsum->leqm = 20*log10(oldsum->cmean) +  108.0851;//  
+     //This must be right because M filter is -5.6 @ 1k Hz that is -25.6 dBFS and to have 85.0 as reference level we must add 25.56 + 85.00 that is 110.6 dB.
+   //this value is obtained calibrating with a -20 dBFS. 
 
 return 0;
 }
@@ -931,7 +929,7 @@ void logleqm(FILE * filehandle, double featuretimesec, struct Sum * oldsum) {
 }
 
 void logleqm10(FILE * filehandle, double featuretimesec, double longaverage) {
-  double leqm10 = 20*log10(pow(longaverage, 0.500)) + 110.600;
+  double leqm10 = 20*log10(pow(longaverage, 0.500)) +  108.0851;
   fprintf(filehandle, "%.4f", featuretimesec);
   fprintf(filehandle, "\t");
   fprintf(filehandle, "%.4f\n", leqm10);
