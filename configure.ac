@@ -1,4 +1,4 @@
-AC_INIT([leqm-nrt], [0.17], [luca.trisciani@dcp-werkstatt.ch])
+AC_INIT([leqm-nrt], [0.18], [luca.trisciani@dcp-werkstatt.ch])
 AM_INIT_AUTOMAKE([-Wall -Werror foreign])
 AC_PROG_CC
 AC_CONFIG_HEADERS([config.h])

@@ -147,7 +147,7 @@ int main(int argc, const char ** argv)
 
 	
   if (argc == 1)
-    { const char helptext[] = "Order of parameters is free.\nPossible parameters are:\n-convpoints <integer number> \tNumber of interpolation points for the filter. Default 64\n-numcpus <integer number> \tNumber of slave threads to speed up operation.\n-timing \t\t\tFor benchmarking speed.\n-chconfcal <db correction> <db correction> <etc. so many times as channels>\n-logleqm10\n-logleqm\n-buffersize <milliseconds>\n";
+    { const char helptext[] = "Order of parameters is free.\nPossible parameters are:\n-convpoints <integer number> \tNumber of interpolation points for the filter. Default 64\n-numcpus <integer number> \tNumber of slave threads to speed up operation.\n-timing \t\t\tFor benchmarking speed.\n-leqnw\t Print out Leq without M Weighting\n-chconfcal <db correction> <db correction> <etc. so many times as channels>\n-logleqm10\n-logleqm\n-buffersize <milliseconds>\n";
       printf(helptext);
       printf("Please indicate a sound file to be processed.\n");
       return 0;
@@ -416,7 +416,7 @@ int main(int argc, const char ** argv)
 
     #ifdef DEBUG
     for (int i=0; i < npoints; i++) {
-      printf("%d\t%.2f\t%.2f\t%.2f\n", i, eqfreqsamples[i], eqfreqresp_db[i], eqfreqresp[i]);  
+      printf("%d\t%.2f\t%.2f\t%.6f\n", i, eqfreqsamples[i], eqfreqresp_db[i], eqfreqresp[i]);  
     }
     #endif
     
@@ -515,7 +515,7 @@ int main(int argc, const char ** argv)
  
  meanoverduration(totsum);
  if (leqnw) {
- printf("Leq(noW): %.4f\n", totsum->rms); // Leq(no Weighting)
+ printf("Leq(nW): %.4f\n", totsum->rms); // Leq(no Weighting)
  }
  printf("Leq(M): %.4f\n", totsum->leqm);
 
@@ -910,7 +910,7 @@ int sumsamples(struct Sum * ts, double * inputsamples, double * cinputsamples, i
 int meanoverduration(struct Sum * oldsum) {
   oldsum->mean = pow(oldsum->sum / ((double) oldsum->nsamples), 0.500);
    oldsum->cmean = pow(oldsum->csum / ((double) oldsum->nsamples), 0.500);
-   oldsum->rms = 20*log10(oldsum->mean);
+   oldsum->rms = 20*log10(oldsum->mean) + 108.0851;
    oldsum->leqm = 20*log10(oldsum->cmean) +  108.0851;//  
      //This must be right because M filter is -5.6 @ 1k Hz that is -25.6 dBFS and to have 85.0 as reference level we must add 25.56 + 85.00 that is 110.6 dB.
    //this value is obtained calibrating with a -20 dBFS. 
