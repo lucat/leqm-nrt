@@ -215,7 +215,7 @@ int main(int argc, const char ** argv)
 	    
 	        if (strcmp(argv[in], "-version") == 0) {
 	     in++;
-	     printf("leqm-nrt version 0.18\n", npoints);
+	     printf("leqm-nrt version 0.18\n");
 	     continue;
 	
       }
