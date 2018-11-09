@@ -140,7 +140,7 @@ int main(int argc, const char ** argv)
 	int parameterstate = 0;
 	int leqnw = 0;
 
-	char soundfilename[512];
+	char soundfilename[1024];
 	// This is a requirement of sndfile library, do not forget it.
 
 	memset(&sfinfo, 0, sizeof(sfinfo));
@@ -297,7 +297,7 @@ int main(int argc, const char ** argv)
 
 
     if (leqm10) {
-      char tempstring[128];
+      char tempstring[1536];
       strcpy(tempstring, soundfilename);
       strcat(tempstring, ".leqm10.txt");
       leqm10logfile = fopen(tempstring, "w");
@@ -310,7 +310,7 @@ int main(int argc, const char ** argv)
 
 
     if (leqmlog) {
-      char tempstring[128];
+      char tempstring[1536];
       strcpy(tempstring, soundfilename);
       strcat(tempstring, ".leqmlog.txt");
       leqmlogfile = fopen(tempstring, "w");
