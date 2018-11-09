@@ -140,7 +140,7 @@ int main(int argc, const char ** argv)
 	int parameterstate = 0;
 	int leqnw = 0;
 
-	char soundfilename[64];
+	char soundfilename[512];
 	// This is a requirement of sndfile library, do not forget it.
 
 	memset(&sfinfo, 0, sizeof(sfinfo));
