@@ -4,7 +4,7 @@
     "Cinematography -- Method of measurement of perceived
     loudness of motion-picture audio material"
 
-    Copyright (C) 2011-2013, 2017-2018 Luca Trisciani
+    Copyright (C) 2011-2013, 2017-2019 Luca Trisciani
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -25,7 +25,6 @@
 
 #include <stdio.h>
 #include <math.h>
-#include <sndfile.h>
 #include <unistd.h>
 #include <pthread.h>
 #include <string.h>
@@ -34,25 +33,53 @@
 #include <ctype.h>
 #include <iso646.h>
 
+
 #ifdef _WIN32
 #include <windows.h>
-#elif __APPLE__
+#elif defined __APPLE__
 #include <sys/param.h>
 #include <sys/sysctl.h
 #endif
 
+#define FFMPEG
+//#define SNDFILELIB
+#ifdef FFMPEG
+#include <stdio.h>
+#include <libavutil/avassert.h>
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libavutil/avutil.h>
+#elif defined SNDFILELIB
+#include <sndfile.h>
+#include <samplerate.h>
+#endif
 
-// Version 0.0.18 (C) Luca Trisciani 2011-2013, 2017-2018
+// Version 0.0.19 (C) Luca Trisciani 2011-2013, 2017-2018
 // Tool from the DCP-Werkstatt Software Bundle
 
 
 
 // COMPILATION
-// compile for DEBUG with gcc -g -DEBUG -lsndfile -lfftw3 -lm -lpthread -lrt -o leqm-nrt leqm-nrt.cpp
-//otherwise  gcc -lsndfile -lm -lpthread -lrt -o leqm-nrt leqm-nrt.c
+// compile for DEBUG with gcc -g -DEBUG -I/usr/include/ffmpeg -lfftw3 -lm -lpthread -lrt  -lavformat -lavcodec -lavutil -o leqm-nrt leqm-nrt.c
+
+//otherwise  gcc -I/usr/include/ffmpeg -lm -lpthread -lrt -lavformat -lavcodec -lavutil -o leqm-nrt leqm-nrt.c
+
+
+//this to do:
+/*
+
+- with the github version and SNDFILELIB I get no memory leaks, so if I strip down of FFMPEG I should get the same here
+
+
+ */
+
+
 
 //#define DEBUG
 
+#ifdef SNDFILELIB
+SRC_DATA src_data;
+#endif
 
 struct Sum {
   double csum; // convolved sum
@@ -75,7 +102,13 @@ struct WorkerArgs {
   int shorttermindex;
   double * shorttermarray;
   int leqm10flag;
+  #ifdef SNDFILELIB
+  double src_output;
+  #endif
 };
+
+
+
 
 int equalinterval( double * freqsamples, double * freqresp, double * eqfreqsamples, double * eqfreqresp, int points, int samplingfreq, int origpoints);
 int equalinterval2( double freqsamples[], double * freqresp, double * eqfreqsamples, double * eqfreqresp, int points, int samplingfreq, int origpoints, int bitdepthsoundfile);
@@ -93,11 +126,82 @@ void  inversefft2(double * eqfreqresp, double * ir, int npoints);
 void * worker_function(void * argfunc);
 void logleqm(FILE * filehandle, double featuretimesec, struct Sum * oldsum);
 double sumandshorttermavrg(double * channelaccumulator, int nsamples);
-void logleqm10(FILE * filehandle, double featuretimesec, double longaverage);
-
-
+double logleqm10(FILE * filehandle, double featuretimesec, double longaverage);
+#ifdef FFMPEG
+int transfer_decoded_data(AVFrame * ptr_frame, struct WorkerArgs ** dptrWorkerArgs, int w_id,  AVCodecContext* codecCon);
+int transfer_decoded_samples(AVFrame * ptr_frame, double * buf, AVCodecContext* codecCon, int buffersizs, int * doublesample_index);
+int transfer_remaining_decoded_samples(AVFrame * ptr_frame, double *bufremain, AVCodecContext* codecCon, int nxtsmpl, int * doublesample_index);
+#endif
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
+
+
+#ifdef FFMPEG
+
+
+static double get(uint8_t *a[], int ch, int index, int ch_count, enum AVSampleFormat f){
+    const uint8_t *p;
+    if(av_sample_fmt_is_planar(f)){
+        f= av_get_alt_sample_fmt(f, 0);
+        p= a[ch];
+    }else{
+        p= a[0];
+        index= ch + index*ch_count;
+    }
+
+    switch(f){
+    case AV_SAMPLE_FMT_U8 : return ((const uint8_t*)p)[index]/127.0-1.0;
+    case AV_SAMPLE_FMT_S16: return ((const int16_t*)p)[index]/32767.0;
+    case AV_SAMPLE_FMT_S32: return ((const int32_t*)p)[index]/2147483647.0;
+    case AV_SAMPLE_FMT_FLT: return ((const float  *)p)[index];
+    case AV_SAMPLE_FMT_DBL: return ((const double *)p)[index];
+    default: av_assert0(0);
+    }
+}
+
+
+void printAudioFrameInfo(const AVCodecContext* codecContext, const AVFrame* frame)
+{
+    // See the following to know what data type (unsigned char, short, float, etc) to use to access the audio data:
+    // http://ffmpeg.org/doxygen/trunk/samplefmt_8h.html#af9a51ca15301871723577c730b5865c5
+  printf("Audio frame info:\n");
+  printf("  Sample count: %d\n", frame->nb_samples);
+  printf("  Channel count: %d\n", codecContext->channels);
+  printf("  Format: %s\n", av_get_sample_fmt_name(codecContext->sample_fmt));
+  printf("  Bytes per sample: %d\n", av_get_bytes_per_sample(codecContext->sample_fmt));
+  printf("  Is planar? %d\n", av_sample_fmt_is_planar(codecContext->sample_fmt));
+  printf("frame->linesize[0] tells you the size (in bytes) of each plane\n");
+
+  if (codecContext->channels > AV_NUM_DATA_POINTERS && av_sample_fmt_is_planar(codecContext->sample_fmt))
+    {
+      printf("The audio stream (and its frames) have too many channels to fit in\n" \
+	     "frame->data. Therefore, to access the audio data, you need to use\n" \
+             "frame->extended_data to access the audio data. It's planar, so\n" \
+	     "each channel is in a different element. That is:\n" \
+	     "  frame->extended_data[0] has the data for channel 1\n" \
+	     "  frame->extended_data[1] has the data for channel 2\n" \
+	     "  etc.\n");
+    }
+    else
+    {
+      printf("Either the audio data is not planar, or there is enough room in\n"\
+	     "frame->data to store all the channels, so you can either use\n"\
+	     "frame->data or frame->extended_data to access the audio data (they\n"\
+	     "should just point to the same data).\n");
+    }
+
+	printf("If the frame is planar, each channel is in a different element.\n"\
+	       "That is:\n"\
+	       "  frame->data[0]/frame->extended_data[0] has the data for channel 1\n"\
+	       "  frame->data[1]/frame->extended_data[1] has the data for channel 2\n"\
+	       "  etc.\n");
+
+       printf("If the frame is packed (not planar), then all the data is in\n"\
+	      "frame->data[0]/frame->extended_data[0] (kind of like how some\n"\
+              "image formats have RGB pixels packed together, rather than storing\n"\
+              " the red, green, and blue channels separately in different arrays.\n");
+}
+#endif
 
 int main(int argc, const char ** argv)
 {
@@ -121,11 +225,26 @@ int main(int argc, const char ** argv)
 
   double * channelconfcalvector;
   channelconfcalvector = NULL;
-  printf("leqm-nrt  Copyright (C) 2011-2013, 2017-2018 Luca Trisciani\nThis program comes with ABSOLUTELY NO WARRANTY.\nThis is free software, and you are welcome to redistribute it\nunder the GPL v3 licence.\nProgram will use 1 + %d slave threads.\n", numCPU);
+  printf("leqm-nrt  Copyright (C) 2011-2013, 2017-2018 Luca Trisciani\nThis program comes with ABSOLUTELY NO WARRANTY; for details on command line parameters -help\nThis is free software, and you are welcome to redistribute it\nunder the GPL v3 licence.\nProgram will use 1 + %d slave threads.\n", numCPU);
   //SndfileHandle file;
+#ifdef SNDFILELIB
   SNDFILE *file;
   file=NULL;
   SF_INFO sfinfo;
+  memset(&sfinfo, 0, sizeof(sfinfo));
+  int src_ratio = 8; //fix at present, could become a parameter
+#elif defined FFMPEG
+  av_register_all();
+    AVFrame * frame = NULL;
+    frame = av_frame_alloc();
+    AVFormatContext* formatContext = NULL;
+    AVCodec * cdc = NULL;
+    AVStream* audioStream = NULL;
+    AVCodecContext* codecContext = NULL;
+    
+
+#endif
+    
   FILE *leqm10logfile;
   leqm10logfile = NULL;
   FILE *leqmlogfile;
@@ -137,17 +256,20 @@ int main(int argc, const char ** argv)
 	double * shorttermaveragedarray;
 	shorttermaveragedarray = NULL;
 	int numbershortperiods = 0;
+	#ifdef FFMPEG
+	int realnumbershortperiods = 0;
+	#endif
 	int parameterstate = 0;
 	int leqnw = 0;
 
-	char soundfilename[1024];
+	char soundfilename[2048];
 	// This is a requirement of sndfile library, do not forget it.
 
-	memset(&sfinfo, 0, sizeof(sfinfo));
+
 
 	
   if (argc == 1)
-    { const char helptext[] = "Order of parameters is free.\nPossible parameters are:\n-convpoints <integer number> \tNumber of interpolation points for the filter. Default 64\n-numcpus <integer number> \tNumber of slave threads to speed up operation.\n-timing \t\t\tFor benchmarking speed.\n-leqnw\t Print out Leq without M Weighting\n-chconfcal <db correction> <db correction> <etc. so many times as channels>\n-logleqm10\n-logleqm\n-buffersize <milliseconds>\n";
+    { const char helptext[] = "Order of parameters is free.\nPossible parameters are:\n-convpoints <integer number> \tNumber of interpolation points for the filter. Default 64\n-numcpus <integer number> \tNumber of slave threads to speed up operation.\n-timing \t\t\tFor benchmarking speed.\n-chconfcal <db correction> <db correction> <etc. so many times as channels>\n-logleqm10\n-logleqm\n-buffersize <milliseconds>\n";
       printf(helptext);
       printf("Please indicate a sound file to be processed.\n");
       return 0;
@@ -155,15 +277,18 @@ int main(int argc, const char ** argv)
 
     
     for (int in = 1; in < argc;) {
-
+      printf("I am still in the loop\n");
       if (!(strncmp(argv[in], "-", 1) == 0)) {
-	if (fileopenstate == 0) {
+
+	  #ifdef SNDFILELIB
+		if (fileopenstate == 0) {
 	  if(! (file = sf_open(argv[in], SFM_READ, &sfinfo))) {
 	    printf("Error while opening audio file, could not open  %s\n.", argv[in]);
 	    puts(sf_strerror(NULL));
 	    return 1;
 	  }
-	  
+
+
 	  strcpy(soundfilename, argv[in]);
 	     fileopenstate = 1;
 	     printf("Opened file: %s\n", argv[in]);
@@ -179,7 +304,73 @@ int main(int argc, const char ** argv)
 	  channelconfcalvector = NULL;
 	  return 0;
 	}
-      }
+      
+
+	  #elif defined FFMPEG
+			if (fileopenstate == 0) {
+   if (avformat_open_input(&formatContext, argv[in], NULL, NULL) != 0)
+    {
+      //av_free(frame);
+      av_frame_free(&frame);
+        printf("Error opening the file\n");
+        return 1;
+    }
+    //fileopenstate = 1;
+    
+    if (avformat_find_stream_info(formatContext, NULL) < 0)
+    {
+      //av_free(frame);
+            av_frame_free(&frame);
+        avformat_close_input(&formatContext);
+        printf("Error finding the stream info\n");
+        return 1;
+    }
+
+    // Find the audio stream
+    //AVCodec* cdc = NULL;
+    int streamIndex = av_find_best_stream(formatContext, AVMEDIA_TYPE_AUDIO, -1, -1, &cdc, 0);
+    if (streamIndex < 0)
+    {
+      //av_free(frame);
+            av_frame_free(&frame);
+        avformat_close_input(&formatContext);
+        printf("Could not find any audio stream in the file\n");
+        return 1;
+    }
+
+    audioStream = formatContext->streams[streamIndex];
+    codecContext = audioStream->codec;
+    codecContext->codec = cdc;
+
+    if (avcodec_open2(codecContext, codecContext->codec, NULL) != 0)
+    {
+      //      av_free(frame);
+            av_frame_free(&frame);
+        avformat_close_input(&formatContext);
+        printf("Couldn't open the context with the decoder\n");
+        return 1;
+    }
+
+	  strcpy(soundfilename, argv[in]);
+	      fileopenstate = 1;
+	    printf("This stream has %d ", codecContext->channels);
+    printf(" channels and a sample rate of %d ", codecContext->sample_rate);
+    printf(" Hz\n"); 
+    printf("The data is in the format %s\n", av_get_sample_fmt_name(codecContext->sample_fmt)); 
+
+	     channelconfcalvector = malloc(sizeof(double) *codecContext->channels);
+	     in++;
+	     continue;
+			} else { /*if (fileopenstate == 0) */
+	  free(channelconfcalvector);
+	  channelconfcalvector = NULL;
+	  return 0;
+	}
+
+          
+#endif
+			continue;
+      }   /*(!(strncmp(argv[in], "-", 1) == 0 */
 
 
       if (strcmp(argv[in], "-chconfcal") == 0) {
@@ -208,14 +399,6 @@ int main(int argc, const char ** argv)
 	     npoints = atoi(argv[in + 1]);
 	     in+=2;
 	     printf("Convolution points sets to %d.\n", npoints);
-	     continue;
-	
-      }
-	    
-	    
-	        if (strcmp(argv[in], "-version") == 0) {
-	     in++;
-	     printf("leqm-nrt version 0.18\n");
 	     continue;
 	
       }
@@ -266,12 +449,16 @@ int main(int argc, const char ** argv)
       }
 
 					if (parameterstate==0) {
+					  printf("The command line switch you typed is not valid: %s\n", argv[in]);
 					  break;
 					}
-    }
+
+      
+    } /* for (int in=1; in < argc;) */
 // Open audio file
 
 //postprocessing parameters
+#ifdef SNDFILELIB
     if (numcalread == sfinfo.channels) {
       for (int cind = 0; cind < sfinfo.channels; cind++) {
 	channelconfcalvector[cind] = convloglin_single(tempchcal[cind]);
@@ -283,21 +470,38 @@ int main(int argc, const char ** argv)
 	for (int cind = 0; cind < sfinfo.channels; cind++) {
 	  channelconfcalvector[cind] = convloglin_single(conf51[cind]);
 	}
+    }
+#elif defined FFMPEG
 
-    } else {
+    if (numcalread == codecContext->channels) {
+      for (int cind = 0; cind < codecContext->channels; cind++) {
+	channelconfcalvector[cind] = convloglin_single(tempchcal[cind]);
+	
+      }
+    }
+    else if ((numcalread == 0) && (codecContext->channels == 6)) {
+	double conf51[6] = {0, 0, 0, 0, -3, -3};
+	for (int cind = 0; cind < codecContext->channels; cind++) {
+	  channelconfcalvector[cind] = convloglin_single(conf51[cind]);
+	}
+    }
+#endif
+
+	
+     else {
 
       printf("Either you specified a different number of calibration than number of channels in the file or you do not indicate any calibration and the program cannot infer one from the number of channels. Please specify a channel calibration on the command line.\n");
 
       free(channelconfcalvector);
       channelconfcalvector = NULL;
       return 0;
-    }
+     }
 
 
 
 
     if (leqm10) {
-      char tempstring[1536];
+      char tempstring[2048];
       strcpy(tempstring, soundfilename);
       strcat(tempstring, ".leqm10.txt");
       leqm10logfile = fopen(tempstring, "w");
@@ -310,7 +514,7 @@ int main(int argc, const char ** argv)
 
 
     if (leqmlog) {
-      char tempstring[1536];
+      char tempstring[2048];
       strcpy(tempstring, soundfilename);
       strcat(tempstring, ".leqmlog.txt");
       leqmlogfile = fopen(tempstring, "w");
@@ -334,21 +538,32 @@ int main(int argc, const char ** argv)
  static double  buffer[BUFFER_LEN]; // it seems this must be static. I don't know why
  */
  double * buffer;
+ #ifdef FFMPEG
+ double * remainbuffer;
+ #endif
  // buffer = new double [BUFFER_LEN];
  //buffersizesamples = (sfinfo.samplerate*sfinfo.channels*buffersizems)/1000;
+
+#ifdef SNDFILELIB
  if ((sfinfo.samplerate*buffersizems)%1000) {
+#elif defined FFMPEG
+   if ((codecContext->sample_rate*buffersizems)%1000) {
+#endif
    printf("Please fine tune the buffersize according to the sample rate\n");
    //close file
    // free memory
    // write a function to do that 
    return 1;
  }
- 
+
+
+   #ifdef SNDFILELIB
   buffersizesamples = (sfinfo.samplerate*sfinfo.channels*buffersizems)/1000;
   buffer = malloc(sizeof(double)*buffersizesamples);
 
  samplingfreq = sfinfo.samplerate;
 
+ 
  if(leqm10) {
    
    //if duration < 10 mm exit
@@ -359,15 +574,46 @@ int main(int argc, const char ** argv)
      return 0;
    }
    
-   //how many short periods in overall duration
+ 
+   //how many short periods in overall duration //ATTENTION this calculation may return 0  for buffer sizes of less than 10 ms. Maybe cast to double!!
    int remainder = sfinfo.frames % (sfinfo.samplerate*buffersizems/1000);
    if (remainder == 0)  numbershortperiods = sfinfo.frames/(sfinfo.samplerate*buffersizems/1000); 
    else  numbershortperiods = sfinfo.frames/(sfinfo.samplerate*buffersizems/1000) + 1;
   
    //allocate array
    shorttermaveragedarray = malloc(sizeof(*shorttermaveragedarray)*numbershortperiods);
+ } /* if (leqm10) */
+
+#elif defined FFMPEG
+  buffersizesamples = (codecContext->sample_rate*codecContext->channels*buffersizems)/1000;
+  buffer = malloc(sizeof(double)*buffersizesamples);
+  remainbuffer = malloc(sizeof(double)*buffersizesamples);
+ samplingfreq = codecContext->sample_rate;
+ // postpone this because I cannot get duration or number of frames
+ // but I cannot postpone this!!
+ //it seems I cannot get total number of audio frames in ffmpeg so I will simply allocate enough
+ //memory for a 5 hours feature, ok?
+ if (leqm10) {
+
+   double featdursec = formatContext->duration;
+   printf("Total duration is %d secs.", (int) formatContext->duration);
+   if ((featdursec/60.0) < 10.0) {
+     printf("The audio file is too short to measure Leq(m10).\n");
+     return 0;
+   }
+
+
+
+   //numbershortperiods = (int) (180000.00 / (((double) codecContext->sample_rate) * (double) buffersizems/1000.00) + 1); //this is wrong, because 180000 cannot be be number of frames, also why should we devide by the sample rate if 18000 is just seconds?
+   numbershortperiods = (int) (18000.00 / ((double) buffersizems/1000.00) + 1);
+   shorttermaveragedarray = malloc(sizeof(*shorttermaveragedarray)*numbershortperiods);
  }
 
+
+ /* if (leqm10) */
+ 
+
+ #endif
 
  //End opening audio file
 
@@ -388,7 +634,7 @@ int main(int argc, const char ** argv)
 
 
 // And what to do for floating point sample coding?
-
+#ifdef SNDFILELIB
    switch(sfinfo.format & SF_FORMAT_SUBMASK) {
    // all signed bitdepth
  case 0x0001:
@@ -408,7 +654,14 @@ int main(int argc, const char ** argv)
    return -1;
    }
 
+#elif defined FFMPEG
+   //sono qui
+   bitdepth = av_get_exact_bits_per_sample(codecContext->codec_id);
+   #ifdef DEBUG
+   printf("ffmpeg report %d bitdepth for the file.", bitdepth);
+   #endif
 
+#endif
 
   
    equalinterval2(freqsamples, freqresp_db, eqfreqsamples, eqfreqresp_db, npoints, samplingfreq, origpoints, bitdepth);
@@ -416,7 +669,7 @@ int main(int argc, const char ** argv)
 
     #ifdef DEBUG
     for (int i=0; i < npoints; i++) {
-      printf("%d\t%.2f\t%.2f\t%.6f\n", i, eqfreqsamples[i], eqfreqresp_db[i], eqfreqresp[i]);  
+      printf("%d\t%.2f\t%.2f\t%.2f\n", i, eqfreqsamples[i], eqfreqresp_db[i], eqfreqresp[i]);  
     }
     #endif
     
@@ -433,8 +686,19 @@ int main(int argc, const char ** argv)
     totsum->mean = 0.0; // Do I write anything here?
     totsum->leqm = 0.0;
     totsum->rms = 0.0;
+    #ifdef SNDFILELIB
     sf_count_t samples_read = 0;
 
+
+
+
+    
+    #elif defined FFMPEG
+    int samples_read = 0;
+    int nextsample = 0;
+    int dsindex = 0;
+        int remaindertot = 0;
+    #endif
  // Main loop through audio file
 
  int worker_id = 0;
@@ -443,9 +707,266 @@ int main(int argc, const char ** argv)
  WorkerArgsArray = malloc(sizeof(struct WorkerArgs *)*numCPU);
  int staindex = 0; //shorttermarrayindex
 
+#ifdef SNDFILELIB
 
+ src_data.end_of_input = 0;/* Set this later. */
+
+	/* Start with zero to force load in while loop. */
+	src_data.input_frames = 0 ;
+	src_data.data_in = buffer ;
+
+	src_data.src_ratio = src_ratio ; //this could be done a separate parameter
+
+	src_data.data_out = src_output ;
+	src_data.output_frames = BUFFER_LEN /channels ;
+
+ 
  while((samples_read = sf_read_double(file, buffer, buffersizesamples)) > 0) {
+   
+#elif defined FFMPEG
+  
+    AVPacket readingPacket;
+    av_init_packet(&readingPacket);
+    int data_size = 0;
+    int copiedsamples = 0; //also pointer to position  wherein to copy into the buffer
 
+      while (av_read_frame(formatContext, &readingPacket) == 0)
+    {
+
+    
+
+
+           if (readingPacket.stream_index == audioStream->index)
+        {
+            AVPacket decodingPacket = readingPacket;
+
+            // Audio packets can have multiple audio frames in a single packet
+            while (decodingPacket.size > 0)
+            {
+                // Try to decode the packet into a frame
+                // Some frames rely on multiple packets, so we have to make sure the frame is finished before
+                // we can use it
+                int gotFrame = 0;
+                int result = avcodec_decode_audio4(codecContext, frame, &gotFrame, &decodingPacket);
+
+                if (result >= 0 && gotFrame)
+                {
+                    decodingPacket.size -= result;
+                    decodingPacket.data += result;
+
+                    // We now have a fully decoded audio frame
+		    #ifdef DEBUG
+                    printAudioFrameInfo(codecContext, frame);
+		    #endif
+		    
+		    //here goes the copying to the multithreaded buffer
+		    //but this buffer is in milliseconds and could be less oder more
+		    //probably greater than the single frame
+
+		    //copy as much samples as there is room in the buffer
+		    
+		      if (gotFrame)
+		      {
+			data_size = //this is in bytes
+		      av_samples_get_buffer_size
+		      (
+		      NULL, 
+		      codecContext->channels,
+		      frame->nb_samples,
+		      codecContext->sample_fmt,
+		      1
+		       );
+ // check if copying frame data will overflow the buffer
+// and copy only the samples necessary to completely fill the buffer
+// save the remaining for the next copy
+// write a function that uses get to change data to double and copy in worker buffer
+		 
+	  copiedsamples += (frame->nb_samples * frame->channels);
+	  //         memcpy((char) ((void *) buffer), frame.data[0], data_size);	  
+	  //transfer_decoded_data(frame, WorkerArgsArray, worker_id, codecContext);
+	  // nextsample is next sample of frame to be copied
+	  nextsample = transfer_decoded_samples(frame, buffer, codecContext, buffersizesamples, &dsindex);
+	  #ifdef DEBUG
+	  printf("Next sample index: %d\n", nextsample);
+	  #endif
+	  //// From here execute only if buffer is full of data
+
+	  //if (copiedsamples >= buffersizesamples) {
+	  while (copiedsamples >= buffersizesamples) {
+	    realnumbershortperiods++; 
+   WorkerArgsArray[worker_id]=malloc(sizeof(struct WorkerArgs));
+   WorkerArgsArray[worker_id]->nsamples = buffersizesamples;
+   WorkerArgsArray[worker_id]->nch = codecContext->channels;
+   WorkerArgsArray[worker_id]->npoints=npoints;
+   WorkerArgsArray[worker_id]->ir = ir;
+   WorkerArgsArray[worker_id]->ptrtotsum = totsum;
+
+   WorkerArgsArray[worker_id]->chconf = channelconfcalvector;
+   if (leqm10) {
+   WorkerArgsArray[worker_id]->shorttermindex = staindex++;
+   WorkerArgsArray[worker_id]->leqm10flag = 1;
+   WorkerArgsArray[worker_id]->shorttermarray = shorttermaveragedarray;
+   } else {
+     WorkerArgsArray[worker_id]->shorttermindex = 0;
+     WorkerArgsArray[worker_id]->leqm10flag = 0;
+   }
+   dsindex = 0;
+	    // store rest in another buffer
+	    if (copiedsamples > buffersizesamples) {
+	    //copiedsamples = transfer_remaining_decoded_samples(frame, remainbuffer, codecContext, nextsample, &dsindex)*frame->channels;
+	    	transfer_remaining_decoded_samples(frame, remainbuffer, codecContext, nextsample, &dsindex)*frame->channels;
+	    } else {
+	    	copiedsamples = 0;
+	    }
+	    //remaindertot = copiedsamples - buffersizesamples;
+	    //copiedsamples = 0;
+	  WorkerArgsArray[worker_id]->argbuffer = malloc(sizeof(double)*buffersizesamples); 
+   memcpy(WorkerArgsArray[worker_id]->argbuffer, (void *)buffer, buffersizesamples*sizeof(double));
+   if (copiedsamples > buffersizesamples) { //mistake here because I updated copiedsamples, it is no more the intended one
+   //once buffer copied, copy rest if present in buffer for next cycle
+     //but I have to update dsindex otherwise I will overwrite data on the next cycle
+	 //ACHTUNG: the buffer must be the one of the next worker!
+	   // ALSO: I have to account for n_samples if buffer is not full on the last buffer
+   memcpy(buffer, remainbuffer, sizeof(double)*(copiedsamples - buffersizesamples)); //here I should copy only copiedsamples-buffersizesamples
+   dsindex = copiedsamples  - buffersizesamples; //added
+   copiedsamples = copiedsamples - buffersizesamples;
+   //copiedsamples already initialized to the right value
+   }
+   pthread_attr_t attr;
+   pthread_attr_init(&attr);
+   pthread_create(&tid[worker_id], &attr, worker_function, WorkerArgsArray[worker_id]);
+
+   worker_id++;
+   if (worker_id == numCPU) {
+       worker_id = 0;
+       //maybe here wait for all cores to output before going on
+       for (int idxcpu = 0; idxcpu < numCPU; idxcpu++) {
+       pthread_join(tid[idxcpu], NULL);
+       free(WorkerArgsArray[idxcpu]->argbuffer);
+       WorkerArgsArray[idxcpu]->argbuffer = NULL;
+       free(WorkerArgsArray[idxcpu]);
+       WorkerArgsArray[idxcpu] = NULL;
+       }
+              //simply log here your measurement it will be a multiple of your threads and your buffer
+       if (leqmlog) {
+	 meanoverduration(totsum); //update leq(m) until now and log it
+       logleqm(leqmlogfile, ((double) totsum->nsamples)/((double) codecContext->sample_rate), totsum );
+	       } //endlog
+   } //if (worker_id == numCPU)
+   
+
+	  } /// till here if buffer is full, but if not? It will never start doing calculations
+		      } //if (gotFrame)
+      if(data_size <= 0) {
+	// No data yet, get more frames 
+	continue;
+      }
+      // We have data, return it and come back for more later 
+      //return data_size;
+      //} //if (gotFrame)
+ 
+
+		    /* print samples */
+
+		/*
+		for ( int ch_index = 0; ch_index < frame->channels; ch_index++) {
+			printf("Channel %d\n", ch_index);
+		    for (int smpl_index = 0; smpl_index< frame->nb_samples; smpl_index++) {
+		      
+		      printf("%0.6f\n", get(frame->data, ch_index, smpl_index, frame->channels, codecContext->sample_fmt));
+		    // end print samples 
+		    } //for nb_samples
+		    } //for channels
+
+*/
+    } //if result >= 0 && gotFrame
+                else
+                {
+                    decodingPacket.size = 0;
+                    decodingPacket.data = NULL;
+                }
+
+
+
+		
+            } //while decodingPacket.size
+        } // if readingPaket.stream
+
+        // You *must* call av_free_packet() after each call to av_read_frame() or else you'll leak memory
+        av_free_packet(&readingPacket);
+
+    
+
+
+    //end while worker_id
+ /// End looping cores
+    } /* while (av_read_frame(formatContext, &readingPacket) */ // main loop through file
+
+
+      /* Adding insert for last samples at the end of the file - v. 28 */
+      if (copiedsamples < buffersizesamples) {
+	realnumbershortperiods++;
+	worker_id = 0; //this should have been already like that
+	WorkerArgsArray[worker_id]=malloc(sizeof(struct WorkerArgs));
+	WorkerArgsArray[worker_id]->nsamples = copiedsamples; //is this correct?
+   WorkerArgsArray[worker_id]->nch = codecContext->channels;
+   WorkerArgsArray[worker_id]->npoints=npoints;
+   WorkerArgsArray[worker_id]->ir = ir;
+   WorkerArgsArray[worker_id]->ptrtotsum = totsum;
+
+   WorkerArgsArray[worker_id]->chconf = channelconfcalvector;
+   if (leqm10) {
+   WorkerArgsArray[worker_id]->shorttermindex = staindex++;
+   WorkerArgsArray[worker_id]->leqm10flag = 1;
+   WorkerArgsArray[worker_id]->shorttermarray = shorttermaveragedarray;
+   } else {
+     WorkerArgsArray[worker_id]->shorttermindex = 0;
+     WorkerArgsArray[worker_id]->leqm10flag = 0;
+   }
+   dsindex = 0;
+	    //remaindertot = copiedsamples - buffersizesamples;
+	    //copiedsamples = 0;
+	  WorkerArgsArray[worker_id]->argbuffer = malloc(sizeof(double)*copiedsamples); 
+   memcpy(WorkerArgsArray[worker_id]->argbuffer, (void *)buffer, copiedsamples*sizeof(double));
+   pthread_attr_t attr;
+   pthread_attr_init(&attr);
+   pthread_create(&tid[worker_id], &attr, worker_function, WorkerArgsArray[worker_id]);
+
+   
+       pthread_join(tid[worker_id], NULL);
+       free(WorkerArgsArray[worker_id]->argbuffer);
+       WorkerArgsArray[worker_id]->argbuffer = NULL;
+       free(WorkerArgsArray[worker_id]);
+       WorkerArgsArray[worker_id] = NULL;
+       if (leqmlog) {
+	 meanoverduration(totsum); //update leq(m) until now and log it
+       logleqm(leqmlogfile, ((double) totsum->nsamples)/((double) codecContext->sample_rate), totsum );
+	       } //endlog
+   
+      } /*if (copiedsamples < buffersizesamples) */
+
+
+
+
+  
+   // Some codecs will cause frames to be buffered up in the decoding process. If the CODEC_CAP_DELAY flag
+    // is set, there can be buffered up frames that need to be flushed, so we'll do that
+    if (codecContext->codec->capabilities & CODEC_CAP_DELAY)
+    {
+        av_init_packet(&readingPacket);
+        // Decode all the remaining frames in the buffer, until the end is reached
+        int gotFrame = 0;
+        while (avcodec_decode_audio4(codecContext, frame, &gotFrame, &readingPacket) >= 0 && gotFrame)
+        {
+            // We now have a fully decoded audio frame
+	  // so I also need to process this
+	  #ifdef DEBUG
+            printAudioFrameInfo(codecContext, frame);
+	    #endif
+        }
+    }
+   #endif
+   #ifdef SNDFILELIB
    WorkerArgsArray[worker_id]=malloc(sizeof(struct WorkerArgs));
    WorkerArgsArray[worker_id]->nsamples = samples_read;
    WorkerArgsArray[worker_id]->nch = sfinfo.channels;
@@ -462,8 +983,9 @@ int main(int argc, const char ** argv)
      WorkerArgsArray[worker_id]->shorttermindex = 0;
      WorkerArgsArray[worker_id]->leqm10flag = 0;
    }
-
-   WorkerArgsArray[worker_id]->argbuffer = malloc(sizeof(double)*buffersizesamples); 
+   
+   WorkerArgsArray[worker_id]->argbuffer = malloc(sizeof(double)*buffersizesamples);
+   //   WorkerArgsArray[worder_id]->src_output = malloc(sizeof(double)*buffersizesamples); // this is for sample rate conversion, not yet used
    memcpy(WorkerArgsArray[worker_id]->argbuffer, buffer, samples_read*sizeof(double));
    
 
@@ -477,8 +999,8 @@ int main(int argc, const char ** argv)
        //maybe here wait for all cores to output before going on
        for (int idxcpu = 0; idxcpu < numCPU; idxcpu++) {
        pthread_join(tid[idxcpu], NULL);
-      free(WorkerArgsArray[idxcpu]->argbuffer);
-      WorkerArgsArray[idxcpu]->argbuffer = NULL;
+       free(WorkerArgsArray[idxcpu]->argbuffer);
+       WorkerArgsArray[idxcpu]->argbuffer = NULL;
        free(WorkerArgsArray[idxcpu]);
        WorkerArgsArray[idxcpu] = NULL;
        }
@@ -493,14 +1015,18 @@ int main(int argc, const char ** argv)
 
     //end while worker_id
  /// End looping cores
-  } // main loop through file
+ } // main loop through file
 
- //here I should wait for rest worker (< numcpu)
+
+ 
+#endif
+ 
+ //here I should wait for rest workers (< numcpu)
  //but I need to dispose of thread id.
- if (worker_id != 0) { // worker_id = 0 means the number of samples was divisible through the number of cpus
+ if (worker_id != 0) { // worker_id == 0 means the number of samples was divisible through the number of cpus
    for (int idxcpu = 0; idxcpu < worker_id; idxcpu++) { //worker_id is at this point one unit more than threads launched
      pthread_join(tid[idxcpu], NULL);
-     free(WorkerArgsArray[idxcpu]->argbuffer);
+          free(WorkerArgsArray[idxcpu]->argbuffer);
      WorkerArgsArray[idxcpu]->argbuffer = NULL;
      free(WorkerArgsArray[idxcpu]);
      WorkerArgsArray[idxcpu] = NULL;
@@ -508,14 +1034,18 @@ int main(int argc, const char ** argv)
         //also log here for a last value
        if (leqmlog) {
 	 meanoverduration(totsum); //update leq(m) until now and log it
+	 #ifdef SNDFILELIB
        logleqm(leqmlogfile, ((double) totsum->nsamples)/((double) sfinfo.samplerate), totsum );
+       #elif defined FFMPEG
+      logleqm(leqmlogfile, ((double) totsum->nsamples)/((double) codecContext->sample_rate), totsum );
+       #endif
 	       } //endlog  
-	}
+ }
  // mean of scalar sum over duration
  
  meanoverduration(totsum);
  if (leqnw) {
- printf("Leq(nW): %.4f\n", totsum->rms); // Leq(no Weighting)
+ printf("Leq(noW): %.4f\n", totsum->rms); // Leq(no Weighting)
  }
  printf("Leq(M): %.4f\n", totsum->leqm);
 
@@ -536,12 +1066,15 @@ int main(int argc, const char ** argv)
 
 
  if (leqm10) {
-
+   //count shorttimeperiods through iterations!
+   printf("Number short period buffers is: %d.\n", realnumbershortperiods);
+   double duration = ((double) realnumbershortperiods) * ((double) buffersizems / 1000.0);
+ //add remainder in samples!
+ //this is not precise, because the last buffer will not be full
    //Take the array with the short term accumulators
    double interval = 10.0;
    //create a rolling average according to rolling interval
    int rollint; // in short 10*60 = 600 sec 600/0.850 
-
 
    //how many element of the array to consider for the rollint?
    //that is how many buffersizems in the interval - interval could be parameterized(?)
@@ -551,10 +1084,31 @@ int main(int argc, const char ** argv)
    if (tempint - ((double) rollint) > 0) {
      rollint += 1;
    }
+
+  
+   printf("Total duration in minutes is %.0f.\n", duration/60.0);
+   if ((duration/60.0) < 10.0) {
+     printf("The audio file is too short to measure Leq(m10).\n");
+     return 0; //but if I really want to exit here I should free memory
+   }
+
+  
+
+
+   //numbershortperiods = (int) (180000.00 / (((double) codecContext->sample_rate) * (double) buffersizems/1000.00) + 1); //this is wrong, because 180000 cannot be be number of frames, also why should we devide by the sample rate if 18000 is just seconds?
+   
+   //shorttermaveragedarray = malloc(sizeof(*shorttermaveragedarray)*numbershortperiods);
+ 
+
+   
+   double * allenmetricarray = malloc (sizeof(*allenmetricarray)*(realnumbershortperiods -rollint));
+
+   
    //two loops
    //external loop
    int indexlong = 0;
-   while(indexlong < (numbershortperiods - rollint)) {
+   double temp_leqm10 = 0.0;
+   while(indexlong < (realnumbershortperiods - rollint)) {
 
      double accumulator = 0;
      //internal loop
@@ -564,12 +1118,24 @@ int main(int argc, const char ** argv)
        accumulator += shorttermaveragedarray[indexshort+indexlong];
      } //end internal loop
      averagedaccumulator = accumulator/((double) rollint);
-     logleqm10(leqm10logfile, ((double) (indexlong+rollint)) * ((double) buffersizems / 1000.0), averagedaccumulator);
+     temp_leqm10 = logleqm10(leqm10logfile, ((double) (indexlong+rollint)) * ((double) buffersizems / 1000.0), averagedaccumulator);
+     if (temp_leqm10 > 80.00) { //See Allen article, this seems quite high...
+       allenmetricarray[indexlong]=temp_leqm10; 
+     } else {
+       allenmetricarray[indexlong] = 0.0;
+     }
      indexlong++;
    } //end external loop
 
-     fclose(leqm10logfile);
+   double thresholdedsum = 0;
+   for (int i = 0; i < (realnumbershortperiods - rollint); i++) {
+     thresholdedsum += allenmetricarray[i];
+   }
+   //printf("Allen Metric: %d", (int) (thresholdedsum / (numbershortperiods - rollint))); // But Joan Allen seems to require minutes as unites?!
+   printf("Allen Metric: %d.\n", (int) (thresholdedsum / (duration/60.0))); // But Joan Allen seems to require minutes as unites?! But considering that the buffers are set to 750 ms it will be same simply spreaded out times 80.
+   fclose(leqm10logfile);
    free(shorttermaveragedarray);
+   free(allenmetricarray);
    shorttermaveragedarray = NULL;
  }
 
@@ -578,8 +1144,6 @@ int main(int argc, const char ** argv)
 
    fclose(leqmlogfile);
  }
-   
- sf_close(file);
  
  free(eqfreqsamples);
  eqfreqsamples = NULL;
@@ -598,10 +1162,26 @@ int main(int argc, const char ** argv)
  totsum = NULL;
  free(buffer);
  buffer=NULL;
+ #ifdef FFMPEG
+ free(remainbuffer);
+ remainbuffer=NULL;
+ #endif
+ #ifdef SNDFILELIB
+     
+ sf_close(file);
+ #elif defined FFMPEG
+   // Clean up!
+    //av_free(frame);
+          av_frame_free(&frame);
+    avcodec_close(codecContext);
+    avformat_close_input(&formatContext);
+ #endif
    return 0;
-}
+ }
+       
 
 
+    
 
 void * worker_function(void * argstruct) {
 
@@ -707,6 +1287,59 @@ void * worker_function(void * argstruct) {
 }
 
 
+ #ifdef FFMPEG
+ int transfer_decoded_data(AVFrame * ptr_frame, struct WorkerArgs ** dptrWorkerArgs, int w_id,  AVCodecContext* codecCon){
+   int doublesample_index = 0; //this is to index the millisecond buffer of the worker
+		for ( int ch_index = 0; ch_index < ptr_frame->channels; ch_index++) {
+
+		  for (int smpl_index = 0; smpl_index< ptr_frame->nb_samples; smpl_index++) { //limit to buffer measure and return rest?
+		      
+		      dptrWorkerArgs[w_id]->argbuffer[doublesample_index++] = get(ptr_frame->data, ch_index, smpl_index, ptr_frame->channels, codecCon->sample_fmt);
+		    // end print samples 
+		    } //for nb_samples
+		    } //for channels
+		return ptr_frame->nb_samples;
+ }
+
+ // will return 0 or the index of next to be copied sample, if not enough room in buffer
+ int transfer_decoded_samples(AVFrame * ptr_frame, double * buf, AVCodecContext* codecCon, int buffersizs, int * doublesample_index){
+   // static int doublesample_index = 0; //this is to index the millisecond buffer of the worker
+   //Yes the sample loop must be the external one, as I work with interleaved channels, not planar channels
+   for (int smpl_index = 0; smpl_index< ptr_frame->nb_samples; smpl_index++) { //limit to buffer measure and return rest?
+     for ( int ch_index = 0; ch_index < ptr_frame->channels; ch_index++) {
+		    buf[(*doublesample_index)++] = get(ptr_frame->data, ch_index, smpl_index, ptr_frame->channels, codecCon->sample_fmt);
+		      #ifdef DEBUG
+		    printf("%0.5f\n", buf[(*doublesample_index)-1]);
+		      #endif
+		      if ((*doublesample_index) == buffersizs) {
+			(*doublesample_index) = 0;
+			//return (ptr_frame->nb_samples - smpl_index) * ptr_frame->channels;
+			return smpl_index+1;
+		      }
+		    // end print samples 
+		    } //for nb_samples
+		    } //for channels
+		return ptr_frame->nb_samples;
+ }
+
+
+ int transfer_remaining_decoded_samples(AVFrame * ptr_frame, double *bufremain, AVCodecContext* codecCon, int nxtsmpl, int * doublesample_index){
+   //int doublesample_index = 0; //this is to index the millisecond buffer of the worker
+   //Yes the sample loop must be the external one, as I work with interleaved channels, not planar channels
+   for (int smpl_index = nxtsmpl; smpl_index< ptr_frame->nb_samples; smpl_index++) { //limit to buffer measure and return rest?
+     for ( int ch_index = 0; ch_index < ptr_frame->channels; ch_index++) {
+       bufremain[(*doublesample_index)++] = get(ptr_frame->data, ch_index, smpl_index, ptr_frame->channels, codecCon->sample_fmt);
+		      #ifdef DEBUG
+		    printf("%0.5f\n", bufremain[(*doublesample_index)-1]);
+		      #endif		     
+		    // end print samples 
+		    } //for nb_samples
+		    } //for channels
+		return (ptr_frame->nb_samples) - nxtsmpl; //but what if also the second round at the same frame fill the buffer?
+ }
+ 
+#endif
+ 
 //to get impulse response frequency response at equally spaced intervals is needed
 
 int equalinterval( double * freqsamples, double  * freqresp, double * eqfreqsamples, double * eqfreqresp, int points, int samplingfreq, int origpoints) {
@@ -911,9 +1544,17 @@ int meanoverduration(struct Sum * oldsum) {
   oldsum->mean = pow(oldsum->sum / ((double) oldsum->nsamples), 0.500);
    oldsum->cmean = pow(oldsum->csum / ((double) oldsum->nsamples), 0.500);
    oldsum->rms = 20*log10(oldsum->mean) + 108.0851;
-   oldsum->leqm = 20*log10(oldsum->cmean) +  108.0851;//  
-     //This must be right because M filter is -5.6 @ 1k Hz that is -25.6 dBFS and to have 85.0 as reference level we must add 25.56 + 85.00 that is 110.6 dB.
-   //this value is obtained calibrating with a -20 dBFS. 
+   if (oldsum->rms < 0.0) {
+     oldsum->rms = 0.0;
+   }
+   oldsum->leqm = 20*log10(oldsum->cmean) + 108.0851;//
+   if (oldsum->leqm < 0.0) {
+     oldsum->leqm = 0.0;
+   }
+     // and this must be right because M filter is -5.6 @ 1k Hz that is -25.6 dBFS and to have 85.0 as reference level we must add 25.56 + 85.00 that is 110.6 dB.
+   //this value is obtained calibrating with a -20 dBFS Dolby Tone (RMS) I think this is correct
+   //But ISO 21727:2004(E) ask for a reference level "measured using an average responding meter". So reference level is not 0.707, but 0.637 = 2/pi
+   //This is only approximate as you should use a separate calibration according to the Dolby Format. Also for SW the tone should be 100Hz (?)
 
 return 0;
 }
@@ -936,10 +1577,13 @@ void logleqm(FILE * filehandle, double featuretimesec, struct Sum * oldsum) {
 
 }
 
-void logleqm10(FILE * filehandle, double featuretimesec, double longaverage) {
-  double leqm10 = 20*log10(pow(longaverage, 0.500)) +  108.0851;
+double logleqm10(FILE * filehandle, double featuretimesec, double longaverage) {
+  double leqm10 = 20*log10(pow(longaverage, 0.500)) + 108.0851;
+  if (leqm10 < 0.0) {
+    leqm10 = 0.0;
+  }
   fprintf(filehandle, "%.4f", featuretimesec);
   fprintf(filehandle, "\t");
   fprintf(filehandle, "%.4f\n", leqm10);
-
+  return leqm10;
 }
