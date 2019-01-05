@@ -77,6 +77,8 @@
 
 //#define DEBUG
 
+#define VERSION 19
+
 #ifdef SNDFILELIB
 SRC_DATA src_data;
 #endif
@@ -225,7 +227,7 @@ int main(int argc, const char ** argv)
 
   double * channelconfcalvector;
   channelconfcalvector = NULL;
-  printf("leqm-nrt  Copyright (C) 2011-2013, 2017-2018 Luca Trisciani\nThis program comes with ABSOLUTELY NO WARRANTY; for details on command line parameters -help\nThis is free software, and you are welcome to redistribute it\nunder the GPL v3 licence.\nProgram will use 1 + %d slave threads.\n", numCPU);
+  printf("leqm-nrt  Copyright (C) 2011-2013, 2017-2019 Luca Trisciani\nThis program comes with ABSOLUTELY NO WARRANTY; for details on command line parameters -help\nThis is free software, and you are welcome to redistribute it\nunder the GPL v3 licence.\nProgram will use 1 + %d slave threads.\n", numCPU);
   //SndfileHandle file;
 #ifdef SNDFILELIB
   SNDFILE *file;
@@ -253,6 +255,8 @@ int main(int argc, const char ** argv)
   int buffersizesamples;
   	double tempchcal[128];
 	int numcalread = 0;
+	double longperiod = 10.0; //this is in minutes and correspond to the period for leqm10
+	double threshold = 80.0; //this is the threshold for the Allen metric
 	double * shorttermaveragedarray;
 	shorttermaveragedarray = NULL;
 	int numbershortperiods = 0;
@@ -269,7 +273,7 @@ int main(int argc, const char ** argv)
 
 	
   if (argc == 1)
-    { const char helptext[] = "Order of parameters is free.\nPossible parameters are:\n-convpoints <integer number> \tNumber of interpolation points for the filter. Default 64\n-numcpus <integer number> \tNumber of slave threads to speed up operation.\n-timing \t\t\tFor benchmarking speed.\n-chconfcal <db correction> <db correction> <etc. so many times as channels>\n-logleqm10\n-logleqm\n-buffersize <milliseconds>\n";
+    { const char helptext[] = "Order of parameters after audio file is free.\nPossible parameters are:\n-convpoints <integer number> \tNumber of interpolation points for the filter.\n\t\t\t\tDefault 64.\n-numcpus <integer number> \tNumber of slave threads to speed up operation.\n-timing \t\t\tFor benchmarking speed.\n-chconfcal <db correction> <db correction> <etc. so many times as channels>\n-logleqm10\t\t\t(will also print Allen metric as output)\n-threshold <leqm>\t\t\tThreshold used for Allen metric (default 80)\n-longperiod <minutes>\t\t\tLong period for leqm10 (default 10)\n-logleqm\n-buffersize <milliseconds>\nUsing:\ngnuplot -e \"plot \\\"logfile.txt\\\" u 1:2; pause -1\"\nit is possible to directly plot the logged data.\n";
       printf(helptext);
       printf("Please indicate a sound file to be processed.\n");
       return 0;
@@ -277,7 +281,6 @@ int main(int argc, const char ** argv)
 
     
     for (int in = 1; in < argc;) {
-      printf("I am still in the loop\n");
       if (!(strncmp(argv[in], "-", 1) == 0)) {
 
 	  #ifdef SNDFILELIB
@@ -386,7 +389,7 @@ int main(int argc, const char ** argv)
 	for (;;)  {
 	if (in < argc) {
 	  //if (!(strncmp(argv[in], "-", 1) == 0)) { //changed this to allow negative numbers
-	    if (!(strncmp(argv[in], "-", 1) == 0) || isdigit(argv[in][1])) {
+	    if (!(strncmp(argv[in], "-", 1) == 0) && isdigit(argv[in][1])) {
 	  tempchcal[numcalread++]=atof(argv[in++]);
 	  } else break;
 	} else break;
@@ -414,6 +417,12 @@ int main(int argc, const char ** argv)
 	     in++;
 	     printf("Execution time will be measured.\n");
 	     continue;
+	
+      }
+	            if (strcmp(argv[in], "-version") == 0) {
+	     in++;
+	     printf("This is leqm-nrt version 0.%d.\n", VERSION);
+	     return 0;
 	
       }
 
@@ -444,6 +453,20 @@ int main(int argc, const char ** argv)
 		buffersizems = atoi(argv[in + 1]);
 	     in+=2;
 	     printf("Buffersize will be set to %d milliseconds.\n", buffersizems);
+	     continue;
+	
+      }
+					if (strcmp(argv[in], "-threshold") == 0) {
+		threshold = atof(argv[in + 1]);
+	     in+=2;
+	     printf("Threshold for Allen metric set to %f Leq(M).\n", threshold);
+	     continue;
+	
+      }
+					if (strcmp(argv[in], "-longperiod") == 0) {
+		longperiod = atof(argv[in + 1]);
+	     in+=2;
+	     printf("Longperiod for Leq(M)X set to %f minutes.\n", longperiod);
 	     continue;
 	
       }
@@ -569,7 +592,7 @@ int main(int argc, const char ** argv)
    //if duration < 10 mm exit
 
    double featdursec = sfinfo.frames / sfinfo.samplerate;
-   if ((featdursec/60.0) < 10.0) {
+   if ((featdursec/60.0) < longperiod) {
      printf("The audio file is too short to measure Leq(m10).\n");
      return 0;
    }
@@ -594,15 +617,15 @@ int main(int argc, const char ** argv)
  //it seems I cannot get total number of audio frames in ffmpeg so I will simply allocate enough
  //memory for a 5 hours feature, ok?
  if (leqm10) {
-
+   /* //This check is not possible here with ffmpeg
    double featdursec = formatContext->duration;
    printf("Total duration is %d secs.", (int) formatContext->duration);
-   if ((featdursec/60.0) < 10.0) {
+   if ((featdursec/60.0) < longperiod) {
      printf("The audio file is too short to measure Leq(m10).\n");
      return 0;
    }
 
-
+   */
 
    //numbershortperiods = (int) (180000.00 / (((double) codecContext->sample_rate) * (double) buffersizems/1000.00) + 1); //this is wrong, because 180000 cannot be be number of frames, also why should we devide by the sample rate if 18000 is just seconds?
    numbershortperiods = (int) (18000.00 / ((double) buffersizems/1000.00) + 1);
@@ -1072,13 +1095,13 @@ int main(int argc, const char ** argv)
  //add remainder in samples!
  //this is not precise, because the last buffer will not be full
    //Take the array with the short term accumulators
-   double interval = 10.0;
+   //double interval = 10.0;
    //create a rolling average according to rolling interval
    int rollint; // in short 10*60 = 600 sec 600/0.850 
 
    //how many element of the array to consider for the rollint?
    //that is how many buffersizems in the interval - interval could be parameterized(?)
-   double tempint = 60.0 * interval / (((double) buffersizems) /1000.0); 
+   double tempint = 60.0 * longperiod / (((double) buffersizems) /1000.0); 
    rollint = (int) tempint;
    //dispose of the rest
    if (tempint - ((double) rollint) > 0) {
@@ -1087,8 +1110,13 @@ int main(int argc, const char ** argv)
 
   
    printf("Total duration in minutes is %.0f.\n", duration/60.0);
-   if ((duration/60.0) < 10.0) {
+   if ((duration/60.0) < longperiod) {
      printf("The audio file is too short to measure Leq(m10).\n");
+   fclose(leqm10logfile);
+   free(shorttermaveragedarray);
+   //free(allenmetricarray);
+   shorttermaveragedarray = NULL;
+   //allenmetricarray = NULL;
      return 0; //but if I really want to exit here I should free memory
    }
 
@@ -1119,7 +1147,7 @@ int main(int argc, const char ** argv)
      } //end internal loop
      averagedaccumulator = accumulator/((double) rollint);
      temp_leqm10 = logleqm10(leqm10logfile, ((double) (indexlong+rollint)) * ((double) buffersizems / 1000.0), averagedaccumulator);
-     if (temp_leqm10 > 80.00) { //See Allen article, this seems quite high...
+     if (temp_leqm10 > threshold) { //See Allen article, this seems quite high...
        allenmetricarray[indexlong]=temp_leqm10; 
      } else {
        allenmetricarray[indexlong] = 0.0;
@@ -1137,6 +1165,7 @@ int main(int argc, const char ** argv)
    free(shorttermaveragedarray);
    free(allenmetricarray);
    shorttermaveragedarray = NULL;
+   allenmetricarray = NULL;
  }
 
  
