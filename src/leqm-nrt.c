@@ -1201,8 +1201,8 @@ int main(int argc, const char ** argv)
    for (int i = 0; i < (realnumbershortperiods - rollint); i++) {
      thresholdedsum += allenmetricarray[i];
    }
-   //printf("Allen Metric: %d", (int) (thresholdedsum / (numbershortperiods - rollint))); // But Joan Allen seems to require minutes as unites?!
-   printf("Allen Metric: %d.\n", (int) (thresholdedsum / (duration/60.0))); // But Joan Allen seems to require minutes as unites?! But considering that the buffers are set to 750 ms it will be same simply spreaded out times 80.
+   //printf("Allen Metric: %d", (int) (thresholdedsum / ((double) numbershortperiods)); // But Ioan Allen seems to require minutes as unites.
+   printf("Allen metric: %d.\n", (int) (thresholdedsum / (duration/60.0))); // But Ioan Allen seems to require minutes as unites. But considering that the buffers are set to 750 ms it will be essentially the same, simply spreaded out times 80.
    fclose(leqm10logfile);
    free(shorttermaveragedarray);
    free(allenmetricarray);
