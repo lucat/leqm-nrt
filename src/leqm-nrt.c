@@ -285,11 +285,11 @@ int main(int argc, const char ** argv)
 	char soundfilename[2048];
 	// This is a requirement of sndfile library, do not forget it.
 
-
+	const char helptext[] = "Order of parameters after audio file is free.\nPossible parameters are:\n--convpoints <integer number> \tNumber of interpolation points for the filter.\n\t\t\t\tDefault 64.\n--numcpus <integer number> \tNumber of slave threads to speed up operation.\n--timing \t\t\tFor benchmarking speed.\n--chconfcal <db correction> <db correction> <etc. so many times as channels>\n--logleqm10\t\t\t(will also print Allen metric as output)\n--threshold <leqm>\t\tThreshold used for Allen metric (default 80)\n--longperiod <minutes>\t\tLong period for leqm10 (default 10)\n--logleqm\n--buffersize <milliseconds>\nUsing:\ngnuplot -e \"plot \\\"logfile.txt\\\" u 1:2; pause -1\"\nit is possible to directly plot the logged data.\n";
 
 	
   if (argc == 1)
-    { const char helptext[] = "Order of parameters after audio file is free.\nPossible parameters are:\n-convpoints <integer number> \tNumber of interpolation points for the filter.\n\t\t\t\tDefault 64.\n-numcpus <integer number> \tNumber of slave threads to speed up operation.\n-timing \t\t\tFor benchmarking speed.\n-chconfcal <db correction> <db correction> <etc. so many times as channels>\n-logleqm10\t\t\t(will also print Allen metric as output)\n-threshold <leqm>\t\tThreshold used for Allen metric (default 80)\n-longperiod <minutes>\t\tLong period for leqm10 (default 10)\n-logleqm\n-buffersize <milliseconds>\nUsing:\ngnuplot -e \"plot \\\"logfile.txt\\\" u 1:2; pause -1\"\nit is possible to directly plot the logged data.\n";
+    { 
       printf(helptext);
       printf("Please indicate a sound file to be processed.\n");
       return 0;
@@ -393,7 +393,7 @@ int main(int argc, const char ** argv)
       }   /*(!(strncmp(argv[in], "-", 1) == 0 */
 
 
-      if (strcmp(argv[in], "-chconfcal") == 0) {
+      if (strcmp(argv[in], "--chconfcal") == 0) {
 	/* as the order of parameter is free I have to postpone 
 	   the check for consistency with the number of channels.
 	   So first create a temporary array, whose number of element will be checked after 
@@ -415,7 +415,7 @@ int main(int argc, const char ** argv)
 	continue;
       }
  
-      if (strcmp(argv[in], "-convpoints") == 0)  {
+      if (strcmp(argv[in], "--convpoints") == 0)  {
        if (checkargvalue(argv[in + 1])) return 1;
 	     npoints = atoi(argv[in + 1]);
 	     in+=2;
@@ -423,7 +423,7 @@ int main(int argc, const char ** argv)
 	     continue;
 	
       }
-	      if (strcmp(argv[in], "-numcpus") == 0) {
+	      if (strcmp(argv[in], "--numcpus") == 0) {
 		if (checkargvalue(argv[in + 1])) return 1;
 		numCPU= atoi(argv[in + 1]);
 	     in+=2;
@@ -431,28 +431,34 @@ int main(int argc, const char ** argv)
 	     continue;
 	
       }
-	      if (strcmp(argv[in], "-timing") == 0) {
+	      if (strcmp(argv[in], "--timing") == 0) {
 		timing = 1;
 	     in++;
 	     printf("Execution time will be measured.\n");
 	     continue;
 	
       }
-	            if (strcmp(argv[in], "-version") == 0) {
+	            if (strcmp(argv[in], "--version") == 0) {
 	     in++;
 	     printf("This is leqm-nrt version 0.%d.\n", VERSION);
 	     return 0;
 	
       }
+		    if (strcmp(argv[in], "--help") == 0) {
+	     in++;
+	     printf(helptext);
+	     return 0;
+	
+      }
 
-	      	      if (strcmp(argv[in], "-logleqm10") == 0) {
+	      	      if (strcmp(argv[in], "--logleqm10") == 0) {
 		leqm10 = 1;
 	     in++;
 	     printf("Leq(M)10 data will be logged to the file leqm10.txt\n");
 	     continue;
 	
       }
-		      	      	      if (strcmp(argv[in], "-logleqm") == 0) {
+		      	      	      if (strcmp(argv[in], "--logleqm") == 0) {
 		leqmlog = 1;
 	     in++;
 	     printf("Leq(M) data will be logged to the file leqmlog.txt\n");
@@ -460,7 +466,7 @@ int main(int argc, const char ** argv)
 	
       }
 
-	     	      	      	      if (strcmp(argv[in], "-leqnw") == 0) {
+	     	      	      	      if (strcmp(argv[in], "--leqnw") == 0) {
 		leqnw = 1;
 	     in++;
 	     printf("Leq(nW) - unweighted -  will be outputted.\n");
@@ -468,7 +474,7 @@ int main(int argc, const char ** argv)
 	
       }
 
-				        if (strcmp(argv[in], "-buffersize") == 0) {
+				        if (strcmp(argv[in], "--buffersize") == 0) {
 					  if (checkargvalue(argv[in + 1])) return 1;
 		buffersizems = atoi(argv[in + 1]);
 	     in+=2;
@@ -476,7 +482,7 @@ int main(int argc, const char ** argv)
 	     continue;
 	
       }
-					if (strcmp(argv[in], "-threshold") == 0) {
+					if (strcmp(argv[in], "--threshold") == 0) {
 					  if (checkargvalue(argv[in + 1])) return 1;
 		threshold = atof(argv[in + 1]);
 	     in+=2;
@@ -484,7 +490,7 @@ int main(int argc, const char ** argv)
 	     continue;
 	
       }
-					if (strcmp(argv[in], "-longperiod") == 0) {
+					if (strcmp(argv[in], "--longperiod") == 0) {
 					   if (checkargvalue(argv[in + 1])) return 1;
 		longperiod = atof(argv[in + 1]);
 	     in+=2;
@@ -515,14 +521,14 @@ int main(int argc, const char ** argv)
 	for (int cind = 0; cind < sfinfo.channels; cind++) {
 	  channelconfcalvector[cind] = convloglin_single(conf51[cind]);
 	}
-	printf("Using input channel configuration calibration for 5.1:\n0 0 0 0 -3 -3\n");
+	printf("Using input channel calibration for 5.1 configuration:\n0 0 0 0 -3 -3\n");
     }
         else if ((numcalread == 0) && (sfinfo.channels == 8)) {
 	  double conf71[8] = {0, 0, 0, 0, -3, -3, -3, -3};
 	for (int cind = 0; cind < sfinfo.channels; cind++) {
 	  channelconfcalvector[cind] = convloglin_single(conf71[cind]);
 	}
-	printf("Using input channel configuration calibration for 7.1:\n0 0 0 0 -3 -3 -3 -3\n");
+	printf("Using input channel calibration for 7.1 configuration:\n0 0 0 0 -3 -3 -3 -3\n");
 
     }
 #elif defined FFMPEG
@@ -537,14 +543,14 @@ int main(int argc, const char ** argv)
 	for (int cind = 0; cind < codecContext->channels; cind++) {
 	  channelconfcalvector[cind] = convloglin_single(conf51[cind]);
 	}
-	printf("Using input channel configuration calibration for 5.1:\n0 0 0 0 -3 -3\n");	
+	printf("Using input channel calibration for 5.1 configuration:\n0 0 0 0 -3 -3\n");	
     }
     else if ((numcalread == 0) && (codecContext->channels == 8)) {
       double conf71[8] = {0, 0, 0, 0, -3, -3, -3, -3};
 	for (int cind = 0; cind < codecContext->channels; cind++) {
 	  channelconfcalvector[cind] = convloglin_single(conf71[cind]);
 	}
-	printf("Using input channel configuration calibration for 7.1:\n0 0 0 0 -3 -3 -3 -3\n");
+	printf("Using input channel calibration for 7.1 configuration:\n0 0 0 0 -3 -3 -3 -3\n");
     }
 #endif
      else {
