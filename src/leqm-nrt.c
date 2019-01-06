@@ -205,6 +205,20 @@ void printAudioFrameInfo(const AVCodecContext* codecContext, const AVFrame* fram
 }
 #endif
 
+int checkisnothyphen(const char * stringarg) {
+  if ((stringarg == NULL) || ((strncmp(stringarg, "-", 1) == 0) && (!isdigit(stringarg+1)))){
+    
+      printf("Please provide required value after argument switch!\n");
+      return 1;
+    } else if (!(isdigit(stringarg))) {
+    return 1;
+  } else if ((strncmp(stringarg, "-", 1) == 0) && (isdigit(stringarg+1))){
+    return 0;
+    } else {
+}
+}
+
+
 int main(int argc, const char ** argv)
 {
   int npoints = 64; // This value is low for precision. Calibration is done with 32768 point.
@@ -281,7 +295,7 @@ int main(int argc, const char ** argv)
 
     
     for (int in = 1; in < argc;) {
-      if (!(strncmp(argv[in], "-", 1) == 0)) {
+      if ((!(strncmp(argv[in], "-", 1) == 0)) && (argv[in] != NULL)) {
 
 	  #ifdef SNDFILELIB
 		if (fileopenstate == 0) {
@@ -367,6 +381,7 @@ int main(int argc, const char ** argv)
 			} else { /*if (fileopenstate == 0) */
 	  free(channelconfcalvector);
 	  channelconfcalvector = NULL;
+	  printf("Please specify and input audio file.\n");
 	  return 0;
 	}
 
@@ -389,7 +404,7 @@ int main(int argc, const char ** argv)
 	for (;;)  {
 	if (in < argc) {
 	  //if (!(strncmp(argv[in], "-", 1) == 0)) { //changed this to allow negative numbers
-	    if (!(strncmp(argv[in], "-", 1) == 0) && isdigit(argv[in][1])) {
+	    if (!(strncmp(argv[in], "-", 1) == 0) || isdigit(argv[in][1])) {
 	  tempchcal[numcalread++]=atof(argv[in++]);
 	  } else break;
 	} else break;
@@ -398,7 +413,8 @@ int main(int argc, const char ** argv)
 	continue;
       }
  
-         if (strcmp(argv[in], "-convpoints") == 0) {
+      if (strcmp(argv[in], "-convpoints") == 0)  {
+       if (checkisnothyphen(argv[in + 1])) return 1;
 	     npoints = atoi(argv[in + 1]);
 	     in+=2;
 	     printf("Convolution points sets to %d.\n", npoints);
@@ -406,6 +422,7 @@ int main(int argc, const char ** argv)
 	
       }
 	      if (strcmp(argv[in], "-numcpus") == 0) {
+		if (checkisnothyphen(argv[in + 1])) return 1;
 		numCPU= atoi(argv[in + 1]);
 	     in+=2;
 	     printf("Number of threads manually set to %d. Default is number of cores in the system minus one.\n", numCPU);
@@ -450,6 +467,7 @@ int main(int argc, const char ** argv)
       }
 
 				        if (strcmp(argv[in], "-buffersize") == 0) {
+					  if (checkisnothyphen(argv[in + 1])) return 1;
 		buffersizems = atoi(argv[in + 1]);
 	     in+=2;
 	     printf("Buffersize will be set to %d milliseconds.\n", buffersizems);
@@ -457,6 +475,7 @@ int main(int argc, const char ** argv)
 	
       }
 					if (strcmp(argv[in], "-threshold") == 0) {
+					  if (checkisnothyphen(argv[in + 1])) return 1;
 		threshold = atof(argv[in + 1]);
 	     in+=2;
 	     printf("Threshold for Allen metric set to %f Leq(M).\n", threshold);
@@ -464,6 +483,7 @@ int main(int argc, const char ** argv)
 	
       }
 					if (strcmp(argv[in], "-longperiod") == 0) {
+					   if (checkisnothyphen(argv[in + 1])) return 1;
 		longperiod = atof(argv[in + 1]);
 	     in+=2;
 	     printf("Longperiod for Leq(M)X set to %f minutes.\n", longperiod);
@@ -493,13 +513,21 @@ int main(int argc, const char ** argv)
 	for (int cind = 0; cind < sfinfo.channels; cind++) {
 	  channelconfcalvector[cind] = convloglin_single(conf51[cind]);
 	}
+	printf("Using input channel configuration calibration for 5.1:\n0 0 0 0 -3 -3\n");
+    }
+        else if ((numcalread == 0) && (sfinfo.channels == 8)) {
+	  double conf71[8] = {0, 0, 0, 0, -3, -3, -3, -3};
+	for (int cind = 0; cind < sfinfo.channels; cind++) {
+	  channelconfcalvector[cind] = convloglin_single(conf71[cind]);
+	}
+	printf("Using input channel configuration calibration for 7.1:\n0 0 0 0 -3 -3 -3 -3\n");
+
     }
 #elif defined FFMPEG
 
     if (numcalread == codecContext->channels) {
       for (int cind = 0; cind < codecContext->channels; cind++) {
 	channelconfcalvector[cind] = convloglin_single(tempchcal[cind]);
-	
       }
     }
     else if ((numcalread == 0) && (codecContext->channels == 6)) {
@@ -507,10 +535,16 @@ int main(int argc, const char ** argv)
 	for (int cind = 0; cind < codecContext->channels; cind++) {
 	  channelconfcalvector[cind] = convloglin_single(conf51[cind]);
 	}
+	printf("Using input channel configuration calibration for 5.1:\n0 0 0 0 -3 -3\n");	
+    }
+    else if ((numcalread == 0) && (codecContext->channels == 8)) {
+      double conf71[8] = {0, 0, 0, 0, -3, -3, -3, -3};
+	for (int cind = 0; cind < codecContext->channels; cind++) {
+	  channelconfcalvector[cind] = convloglin_single(conf71[cind]);
+	}
+	printf("Using input channel configuration calibration for 7.1:\n0 0 0 0 -3 -3 -3 -3\n");
     }
 #endif
-
-	
      else {
 
       printf("Either you specified a different number of calibration than number of channels in the file or you do not indicate any calibration and the program cannot infer one from the number of channels. Please specify a channel calibration on the command line.\n");
