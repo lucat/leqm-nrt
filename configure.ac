@@ -1,10 +1,9 @@
 #                                               -*- Autoconf -*-
 # Process this file with autoconf to produce a configure script.
 
-AC_PREREQ([2.69])
+#AC_PREREQ([2.69])
 AC_INIT([leqm-nrt], [0.19], [luca.trisciani@dcp-werkstatt.ch])
-
-AM_INIT_AUTOMAKE(leqm-nrt, 0.19)
+AM_INIT_AUTOMAKE([-Wall -Werror foreign])
 AC_CONFIG_SRCDIR([src/leqm-nrt.c])
 AC_CONFIG_HEADERS([config.h])
 
@@ -26,7 +25,7 @@ AC_CHECK_LIB([pthread], [main])
 AC_CHECK_LIB([rt], [main])
 
 # Checks for header files.
-AC_CHECK_HEADERS([stdlib.h string.h sys/param.h unistd.h pthread.h time.h ctype.h iso646.h])
+AC_CHECK_HEADERS([stdlib.h string.h sys/param.h unistd.h])
 
 # Checks for typedefs, structures, and compiler characteristics.
 AC_TYPE_INT16_T
@@ -37,6 +36,5 @@ AC_TYPE_UINT8_T
 AC_FUNC_MALLOC
 AC_CHECK_FUNCS([clock_gettime memset pow])
 
-AC_CONFIG_FILES([src/Makefile])
-AC_CONFIG_SUBDIRS([testnew/leqm-nrt])
+AC_CONFIG_FILES([Makefile src/Makefile])
 AC_OUTPUT
