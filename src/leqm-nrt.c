@@ -54,7 +54,7 @@
 #include <samplerate.h>
 #endif
 
-// Version 0.0.19 (C) Luca Trisciani 2011-2013, 2017-2018
+// Version 0.0.19 (C) Luca Trisciani 2011-2013, 2017-2019
 // Tool from the DCP-Werkstatt Software Bundle
 
 
@@ -206,15 +206,17 @@ void printAudioFrameInfo(const AVCodecContext* codecContext, const AVFrame* fram
 #endif
 
 int checkisnothyphen(const char * stringarg) {
-  if ((stringarg == NULL) || ((strncmp(stringarg, "-", 1) == 0) && (!isdigit(stringarg+1)))){
-    
+  if (stringarg == NULL) {
       printf("Please provide required value after argument switch!\n");
       return 1;
     } else if (!(isdigit(stringarg))) {
-    return 1;
-  } else if ((strncmp(stringarg, "-", 1) == 0) && (isdigit(stringarg+1))){
+    if  ((strncmp(stringarg, "-", 1) == 0) && (isdigit(stringarg+1))){
     return 0;
     } else {
+      return 1;
+    }
+  } else {
+      return 0;
 }
 }
 
@@ -287,7 +289,7 @@ int main(int argc, const char ** argv)
 
 	
   if (argc == 1)
-    { const char helptext[] = "Order of parameters after audio file is free.\nPossible parameters are:\n-convpoints <integer number> \tNumber of interpolation points for the filter.\n\t\t\t\tDefault 64.\n-numcpus <integer number> \tNumber of slave threads to speed up operation.\n-timing \t\t\tFor benchmarking speed.\n-chconfcal <db correction> <db correction> <etc. so many times as channels>\n-logleqm10\t\t\t(will also print Allen metric as output)\n-threshold <leqm>\t\t\tThreshold used for Allen metric (default 80)\n-longperiod <minutes>\t\t\tLong period for leqm10 (default 10)\n-logleqm\n-buffersize <milliseconds>\nUsing:\ngnuplot -e \"plot \\\"logfile.txt\\\" u 1:2; pause -1\"\nit is possible to directly plot the logged data.\n";
+    { const char helptext[] = "Order of parameters after audio file is free.\nPossible parameters are:\n-convpoints <integer number> \tNumber of interpolation points for the filter.\n\t\t\t\tDefault 64.\n-numcpus <integer number> \tNumber of slave threads to speed up operation.\n-timing \t\t\tFor benchmarking speed.\n-chconfcal <db correction> <db correction> <etc. so many times as channels>\n-logleqm10\t\t\t(will also print Allen metric as output)\n-threshold <leqm>\t\tThreshold used for Allen metric (default 80)\n-longperiod <minutes>\t\tLong period for leqm10 (default 10)\n-logleqm\n-buffersize <milliseconds>\nUsing:\ngnuplot -e \"plot \\\"logfile.txt\\\" u 1:2; pause -1\"\nit is possible to directly plot the logged data.\n";
       printf(helptext);
       printf("Please indicate a sound file to be processed.\n");
       return 0;
