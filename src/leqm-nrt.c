@@ -205,12 +205,12 @@ void printAudioFrameInfo(const AVCodecContext* codecContext, const AVFrame* fram
 }
 #endif
 
-int checkisnothyphen(const char * stringarg) {
+int checkargvalue(const char * stringarg) {
   if (stringarg == NULL) {
       printf("Please provide required value after argument switch!\n");
       return 1;
-    } else if (!(isdigit(stringarg))) {
-    if  ((strncmp(stringarg, "-", 1) == 0) && (isdigit(stringarg+1))){
+    } else if (!(isdigit(stringarg[0]))) {
+    if  ((strncmp(stringarg, "-", 1) == 0) && (isdigit(stringarg[1]))){
     return 0;
     } else {
       return 1;
@@ -416,7 +416,7 @@ int main(int argc, const char ** argv)
       }
  
       if (strcmp(argv[in], "-convpoints") == 0)  {
-       if (checkisnothyphen(argv[in + 1])) return 1;
+       if (checkargvalue(argv[in + 1])) return 1;
 	     npoints = atoi(argv[in + 1]);
 	     in+=2;
 	     printf("Convolution points sets to %d.\n", npoints);
@@ -424,7 +424,7 @@ int main(int argc, const char ** argv)
 	
       }
 	      if (strcmp(argv[in], "-numcpus") == 0) {
-		if (checkisnothyphen(argv[in + 1])) return 1;
+		if (checkargvalue(argv[in + 1])) return 1;
 		numCPU= atoi(argv[in + 1]);
 	     in+=2;
 	     printf("Number of threads manually set to %d. Default is number of cores in the system minus one.\n", numCPU);
@@ -469,7 +469,7 @@ int main(int argc, const char ** argv)
       }
 
 				        if (strcmp(argv[in], "-buffersize") == 0) {
-					  if (checkisnothyphen(argv[in + 1])) return 1;
+					  if (checkargvalue(argv[in + 1])) return 1;
 		buffersizems = atoi(argv[in + 1]);
 	     in+=2;
 	     printf("Buffersize will be set to %d milliseconds.\n", buffersizems);
@@ -477,7 +477,7 @@ int main(int argc, const char ** argv)
 	
       }
 					if (strcmp(argv[in], "-threshold") == 0) {
-					  if (checkisnothyphen(argv[in + 1])) return 1;
+					  if (checkargvalue(argv[in + 1])) return 1;
 		threshold = atof(argv[in + 1]);
 	     in+=2;
 	     printf("Threshold for Allen metric set to %f Leq(M).\n", threshold);
@@ -485,7 +485,7 @@ int main(int argc, const char ** argv)
 	
       }
 					if (strcmp(argv[in], "-longperiod") == 0) {
-					   if (checkisnothyphen(argv[in + 1])) return 1;
+					   if (checkargvalue(argv[in + 1])) return 1;
 		longperiod = atof(argv[in + 1]);
 	     in+=2;
 	     printf("Longperiod for Leq(M)X set to %f minutes.\n", longperiod);
