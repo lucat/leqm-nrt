@@ -1614,19 +1614,26 @@ int sumsamples(struct Sum * ts, double * inputsamples, double * cinputsamples, i
 int meanoverduration(struct Sum * oldsum) {
   oldsum->mean = pow(oldsum->sum / ((double) oldsum->nsamples), 0.500);
    oldsum->cmean = pow(oldsum->csum / ((double) oldsum->nsamples), 0.500);
-   oldsum->rms = 20*log10(oldsum->mean) + 108.0851;
+   oldsum->rms = 20*log10(oldsum->mean) + 108.010299957;
    if (oldsum->rms < 0.0) {
      oldsum->rms = 0.0;
    }
-   oldsum->leqm = 20*log10(oldsum->cmean) + 108.0851;//
+   oldsum->leqm = 20*log10(oldsum->cmean) + 108.010299957;//
    if (oldsum->leqm < 0.0) {
      oldsum->leqm = 0.0;
    }
-     // and this must be right because M filter is -5.6 @ 1k Hz that is -25.6 dBFS and to have 85.0 as reference level we must add 25.56 + 85.00 that is 110.6 dB.
-   //this value is obtained calibrating with a -20 dBFS Dolby Tone (RMS) I think this is correct
-   //But ISO 21727:2004(E) ask for a reference level "measured using an average responding meter". So reference level is not 0.707, but 0.637 = 2/pi
-   //This is only approximate as you should use a separate calibration according to the Dolby Format. Also for SW the tone should be 100Hz (?)
 
+   /*
+How the final offset is calculated without reference to a test tone:
+P0 is the SPL reference 20 uPa
+
+Reference SPL is RMS ! So 85 SPL over 20 uPa is 10^4.25 x 0.000020 = 0.355655882 Pa (RMS), 
+but Peak value is 0.355655882 x sqr(2) = 0.502973372 that is 20 x log ( 0.502973372 / 0.000020) = 88.010299957
+
+To that one has to add the 20 dB offset of the reference -20dBFS: 88.010299957 + 20.00 = 108.010299957 
+   */
+   /*But ISO 21727:2004(E) ask for a reference level "measured using an average responding meter". So reference level is not 0.707, but 0.637 = 2/pi
+   */
 return 0;
 }
 
@@ -1649,7 +1656,7 @@ void logleqm(FILE * filehandle, double featuretimesec, struct Sum * oldsum) {
 }
 
 double logleqm10(FILE * filehandle, double featuretimesec, double longaverage) {
-  double leqm10 = 20*log10(pow(longaverage, 0.500)) + 108.0851;
+  double leqm10 = 20*log10(pow(longaverage, 0.500)) + 108.010299957;
   if (leqm10 < 0.0) {
     leqm10 = 0.0;
   }
