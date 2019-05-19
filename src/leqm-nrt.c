@@ -54,7 +54,7 @@
 #include <samplerate.h>
 #endif
 
-// Version 0.0.19 (C) Luca Trisciani 2011-2013, 2017-2019
+// Version 0.0.20 (C) Luca Trisciani 2011-2013, 2017-2019
 // Tool from the DCP-Werkstatt Software Bundle
 
 
