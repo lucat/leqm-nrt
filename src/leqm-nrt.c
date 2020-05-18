@@ -278,11 +278,27 @@ int main(int argc, const char ** argv)
 	
       }
     }
+    else if ((numcalread == 0) && (sfinfo.channels == 2)) {
+	double conf20[2] = {0, 0};
+	for (int cind = 0; cind < sfinfo.channels; cind++) {
+	  channelconfcalvector[cind] = convloglin_single(conf20[cind]);
+	}
+	printf("Using input channel calibration for 2.0 configuration:\n0 0\n");
+    }
     else if ((numcalread == 0) && (sfinfo.channels == 6)) {
 	double conf51[6] = {0, 0, 0, 0, -3, -3};
 	for (int cind = 0; cind < sfinfo.channels; cind++) {
 	  channelconfcalvector[cind] = convloglin_single(conf51[cind]);
 	}
+	printf("Using input channel calibration for 5.1 configuration:\n0 0 0 0 -3 -3\n");
+
+    }
+    else if ((numcalread == 0) && (sfinfo.channels == 8)) {
+      double conf71[8] = {0, 0, 0, 0, -3, -3, -3, -3};
+	for (int cind = 0; cind < sfinfo.channels; cind++) {
+	  channelconfcalvector[cind] = convloglin_single(conf71[cind]);
+	}
+	printf("Using input channel calibration for 7.1 configuration:\n0 0 0 0 -3 -3 -3 -3\n");
 
     } else {
 
