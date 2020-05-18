@@ -38,7 +38,7 @@
 #include <windows.h>
 #elif defined __APPLE__
 #include <sys/param.h>
-#include <sys/sysctl.h
+#include <sys/sysctl.h>
 #endif
 
 #define FFMPEG
