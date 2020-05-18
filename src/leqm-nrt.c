@@ -543,6 +543,16 @@ int main(int argc, const char ** argv)
 	channelconfcalvector[cind] = convloglin_single(tempchcal[cind]);
       }
     }
+    else if ((numcalread == 0) && (codecContext->channels == 2)) {
+	double conf20[2] = {0, 0};
+	for (int cind = 0; cind < codecContext->channels; cind++) {
+	  channelconfcalvector[cind] = convloglin_single(conf20[cind]);
+	}
+	printf("Using input channel calibration for 2.0 configuration:\n0 0\n");	
+    }
+
+
+
     else if ((numcalread == 0) && (codecContext->channels == 6)) {
 	double conf51[6] = {0, 0, 0, 0, -3, -3};
 	for (int cind = 0; cind < codecContext->channels; cind++) {
