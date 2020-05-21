@@ -172,6 +172,31 @@ struct Sum
 };
 
 
+typedef struct coefficient_context {
+
+  int sf;
+
+  //HSF coefficient (K filter stage 1)
+
+  double hsa0;
+  double hsa1;
+  double hsa2;
+  double hsb0;
+  double hsb1;
+  double hsb2;
+
+  //HPF coefficient (K filter stage 2 - RLB -> Revised Loudness B Weighting)
+
+  double hpa0;
+  double hpa1;
+  double hpa2;
+  double hpb0;
+  double hpb1;
+  double hpb2;
+  
+} coeff;
+
+
 
 typedef struct LevelGate
 {
@@ -209,6 +234,7 @@ struct WorkerArgs
   int nch;
   int npoints;
   double *ir;
+  coeff * Kcoeffs;
   struct Sum *ptrtotsum;
   double *chconf;
   int *chgate;
@@ -236,7 +262,11 @@ struct WorkerArgs
 
 
 
-LG *LGCtx;
+LG * LGCtx;
+
+coeff * coeffs;
+
+int precalculate_coeffs_K_filter(coeff * coeff_ctx, int samplerate);
 
 int equalinterval (double *freqsamples, double *freqresp,
 		   double *eqfreqsamples, double *eqfreqresp, int points,
@@ -313,8 +343,8 @@ void lkfs_finalcomputation_withdolbydi (LG * pt_lgctx, int *pt_chgateconf,
 					double adlgthreshold);
 
 int calcSampleStepLG (float percentOverlap, int samplerate, int LGbufferms);
-int K_filter_stage1 (double *smp_out, double *smp_in, int nsamples);
-int K_filter_stage2 (double *smp_out, double *smp_in, int nsamples);
+int K_filter_stage1 (double *smp_out, double *smp_in, int nsamples, coeff * coeffctx);
+int K_filter_stage2 (double *smp_out, double *smp_in, int nsamples, coeff * coeffctx);
 int M_filter (double *smp_out, double *smp_in, int samples, int samplerate);
 
 LG_Buf *allocateLGBuffer (int samplenumber);
@@ -338,7 +368,76 @@ pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 void debuginit (double *pt_toarray, double value, int arraylength);
 #endif
 
+
+int precalculate_coeffs_K_filter(coeff * coeff_ctx, int samplerate)
+{
+
+  /* For this calculation see (but the ITU standard has no indication and is older in the first 
+publication, so possibly there is also another source):
+
+"Algorithm described in Mansbridge, Stuart, Saoirse Finn, and Joshua D. Reiss. "Implementation
+and Evaluation of Autonomous Multi-track Fader Control." Paper presented at the
+132nd Audio Engineering Society Convention, Budapest, Hungary, 2012."
+(AES Convention Paper 8588) 
+
+  */
+
+  
+  /* HSF prefilter coefficient calculation*/
+  
+  double  dBboost = 3.999843853973347;
+  double  cfreq = 1681.974450955533;
+  double  qf = 0.7071752369554196;
+ 
+  double K  = tan(M_PI * cfreq / samplerate);
+  double Vh = pow(10.0, dBboost / 20.0);
+  double Vb = pow(Vh, 0.4996667741545416);
+
+  coeff_ctx->hsa0 = 1.0;
+  double a_temp=  1.0 + K / qf + K * K;
+  coeff_ctx->hsb0 = (Vh + Vb * K / qf + K * K) / a_temp;
+  coeff_ctx->hsb1 = 2.0 * (K * K -  Vh) / a_temp;
+  coeff_ctx->hsb2 = (Vh - Vb * K / qf + K * K) / a_temp;
+  coeff_ctx->hsa1 = 2.0 * (K * K - 1.0) / a_temp;
+  coeff_ctx->hsa2 = (1.0 - K / qf + K * K) / a_temp;
+
+  /* HPF calculations - alias Revised Loudness B Weighting */
+  // reusing variables from preceding calculations
+
+  cfreq = 38.13547087602444;
+  qf  =  0.5003270373238773;
+  K  = tan(M_PI * cfreq / samplerate);
+
+  coeff_ctx->hpb0 = 1.0;
+  coeff_ctx->hpb1 = -2.0;
+  coeff_ctx->hpb2 = 1.0; 
+  coeff_ctx->hpa0 = 1.0;
+  coeff_ctx->hpa1 = 2.0 * (K * K - 1.0) / (1.0 + K / qf + K * K);
+  coeff_ctx->hpa2 = (1.0 - K / qf + K * K) / (1.0 + K / qf + K * K);
+
+  return 0;
+  
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
 #ifdef FFMPEG
+
+
+
+
+
+
 
 
 static double
@@ -454,6 +553,7 @@ int
 main (int argc, const char **argv)
 {
   int npoints = 64;		// This value is low for precision. Calibration is done with 32768 points.
+  int convpointsset = 0;
   int origpoints = 21;		//number of points in the standard CCIR filter
   int samplingfreq;		// this and the next is defined later taking it from sound file
   int bitdepth;
@@ -571,12 +671,12 @@ main (int argc, const char **argv)
   int parameterstate = 0;
   int leqnw = 0;
   int lkfs = 0;
-  int poly = 0;
+  int poly = 1; //default to polynomial filtering starting from v. 0.20
   char soundfilename[2048];
   // This is a requirement of sndfile library, do not forget it.
 
   const char helptext[] =
-    "Order of parameters after audio file is free.\nPossible parameters are:\n--convpoints <integer number> \tNumber of interpolation points for the filter.\n\t\t\t\tDefault 64.\n--numcpus <integer number> \tNumber of slave threads to speed up operation.\n--timing \t\t\tFor benchmarking speed.\n--chconfcal <dB correction> <dB correction> <etc. so many times as channels>\n--leqnw\t\t\t\toutput leq with no weighting\n--logleqm10\t\t\t(will also print Allen metric as output)\n--lkfs\t\t\t\tSwitch LKFS ITU 1770-4 on.\n--polynomial\t\t\tUse polynomial filtering for M weighting instead of convolution.\n--dolbydi\t\t\tSwitch Dolby Dialogue Intelligence on\n--chgateconf <0|1|2>, 0 = no gate, 1 = level gate (in dB) and 2 = dialogue gate\n--agsthreshold <speech %%>\tFor Leq(M,DI) and LKFS(DI) default 33%%.\n--levelgate <Leq(M)>\t\tThis will force level gating and deactivate speech gating\n--threshold <Leq(M)>\t\tThreshold used for Allen metric (default 80)\n--longperiod <minutes>\t\tLong period for leqm10 (default 10)\n--logleqm\t\t\tLog Leq(M) from start every buffersize ms.\n--buffersize <milliseconds>\t\t\tSize of Buffer in milliseconds.\nUsing:\ngnuplot -e \"plot \\\"logfile.txt\\\" u 1:2; pause -1\"\nit is possible to directly plot the logged data.\n";
+    "Order of parameters after audio file is free.\nPossible parameters are:\n--convpoints <integer number> \tUse convolution with n points interpolation instead of polynomial filter.\n\t\t\t\tDefault is polynomial filter.\n--numcpus <integer number> \tNumber of slave threads to speed up operation.\n--timing \t\t\tFor benchmarking speed.\n--chconfcal <dB correction> <dB correction> <etc. so many times as channels>\n--leqnw\t\t\t\toutput leq with no weighting\n--logleqm10\t\t\t(will also print Allen metric as output)\n--lkfs\t\t\t\tSwitch LKFS ITU 1770-4 on.\n--dolbydi\t\t\tSwitch Dolby Dialogue Intelligence on\n--chgateconf <0|1|2>, 0 = no gate, 1 = level gate (in dB) and 2 = dialogue gate\n--agsthreshold <speech %%>\tFor Leq(M,DI) and LKFS(DI) default 33%%.\n--levelgate <Leq(M)>\t\tThis will force level gating and deactivate speech gating\n--threshold <Leq(M)>\t\tThreshold used for Allen metric (default 80)\n--longperiod <minutes>\t\tLong period for leqm10 (default 10)\n--logleqm\t\t\tLog Leq(M) from start every buffersize ms.\n--buffersize <milliseconds>\t\t\tSize of Buffer in milliseconds.\nUsing:\ngnuplot -e \"plot \\\"logfile.txt\\\" u 1:2; pause -1\"\nit is possible to directly plot the logged data.\n";
 
 
   if (argc == 1)
@@ -802,6 +902,7 @@ main (int argc, const char **argv)
       npoints = atoi (argv[in + 1]);
       in += 2;
       printf ("Convolution points sets to %d.\n", npoints);
+      convpointsset = 1;
       continue;
 
     }
@@ -889,6 +990,7 @@ main (int argc, const char **argv)
       continue;
 
     }
+    /*
     if (strcmp (argv[in], "--polynomial") == 0)
     {
       poly = 1;
@@ -897,7 +999,7 @@ main (int argc, const char **argv)
 	("Using polynomial filter instead of convolution for M weighting.\n");
       continue;
 
-    }
+      }*/
     if (strcmp (argv[in], "--version") == 0)
     {
       in++;
@@ -1185,13 +1287,25 @@ main (int argc, const char **argv)
     clock_gettime (CLOCK_MONOTONIC, &starttime);
   }
 
-
+  if (convpointsset) {
+    poly = 0;
+    printf("Using convoluzion instead of polynomial filtering.");
+  }
+  
   if (lkfs)
   {
     printf
       ("Setting buffersize to 400ms as per ITU 1770-4 requirements for LKFS measurement.\n");
     buffersizems = 400;
-
+    //initialize coeff struct and calculates coefficients for K filter stage 1 and 2
+    coeffs = malloc(sizeof(coeff));
+#ifdef SNDFILELIB
+    precalculate_coeffs_K_filter(coeffs, sfinfo.samplerate);
+#elif defined FFMPEG
+    precalculate_coeffs_K_filter(coeffs, codecContext->sample_rate);
+#endif
+  
+    
   }
   // reading to a double or float buffer with sndfile take care of normalization
   /*
@@ -1333,6 +1447,9 @@ main (int argc, const char **argv)
       calcSampleStepLG (LGCtx->overlap, sfinfo.samplerate, buffersizems);
     LGCtx->gblocksize = (sfinfo.samplerate * buffersizems / 1000);	//At present this is the same as buffersizems, but in samples (no interleaving)
 
+
+    
+    
     //first calculate or guestimate total step number, see stepcounter in LG 
     int remainder = sfinfo.frames % LGCtx->ops;
 
@@ -2340,6 +2457,7 @@ while (av_read_frame (formatContext, &readingPacket) == 0)
 
 	    if (lkfs)
 	    {
+	      WorkerArgsArray[worker_id]->Kcoeffs = coeffs;
 #ifdef DI
 	      if ((leqm10) || (dolbydi))
 	      {
@@ -2531,6 +2649,7 @@ if (copiedsamples < buffersizesamples)
   }
   if (lkfs)
   {
+    WorkerArgsArray[worker_id]->Kcoeffs = coeffs;
 #ifdef DI
     if ((leqm10) || (dolbydi))
     {
@@ -2665,6 +2784,7 @@ else
 
 if (lkfs)
 {
+  WorkerArgsArray[worker_id]->Kcoeffs = coeffs;
 #ifdef DI
   if ((leqm10) || (dolbydi))
   {
@@ -3066,7 +3186,10 @@ if (lkfs)
   LGCtx->chgateconf = NULL;
   free (LGCtx);
   LGCtx = NULL;
-}
+  free (coeffs);
+  coeffs = NULL;
+  
+  }
 
   if (!poly) {
 free (eqfreqsamples);
@@ -3282,10 +3405,12 @@ worker_function (void *argstruct)
 	/* Filtering stage one and two */
 	K_filter_stage1 (thisWorkerArgs->lg_buffers->bufferSwap,
 			 thisWorkerArgs->lg_buffers->bufferLG,
-			 thisWorkerArgs->nsamples / thisWorkerArgs->nch);
+			 thisWorkerArgs->nsamples / thisWorkerArgs->nch,
+			 thisWorkerArgs->Kcoeffs);
 	K_filter_stage2 (thisWorkerArgs->lg_buffers->bufferLG,
 			 thisWorkerArgs->lg_buffers->bufferSwap,
-			 thisWorkerArgs->nsamples / thisWorkerArgs->nch);
+			 thisWorkerArgs->nsamples / thisWorkerArgs->nch,
+			 thisWorkerArgs->Kcoeffs);
 	rectify (thisWorkerArgs->lg_buffers->bufferSwap,
 		 thisWorkerArgs->lg_buffers->bufferLG,
 		 thisWorkerArgs->nsamples / thisWorkerArgs->nch);
@@ -3324,6 +3449,8 @@ worker_function (void *argstruct)
 
   if (thisWorkerArgs->lkfsflag)
   {
+    /* following if is to avoid incrementing stepcounter in case there where not enough samples to fill a gating block */ 
+        if ((thisWorkerArgs->nsamples / thisWorkerArgs->nch) >= thisWorkerArgs->lg_ctx->ops) {
     pthread_mutex_lock (&mutex);
     if (copy_stepcounter % thisWorkerArgs->lg_ctx->subdivs == 0)
     {
@@ -3335,6 +3462,7 @@ worker_function (void *argstruct)
 	copy_stepcounter % thisWorkerArgs->lg_ctx->subdivs;
     }
     pthread_mutex_unlock (&mutex);
+  }
   }
   //Create a function for this also a tag so that the worker know if he has to do this or not
 
@@ -3446,6 +3574,10 @@ worker_function_gated (void *argstruct)
 
     }
 
+
+    /* lkfs */
+
+    
     if (thisWorkerArgs->lkfsflag)
     {
       for (int n = ch, m = 0; n < thisWorkerArgs->nsamples;
@@ -3528,6 +3660,18 @@ worker_function_gated (void *argstruct)
     convolvedbuffer = NULL;
 
 
+    /* lkfs */
+
+
+    /* For LKFS according to ITU Standard:
+"The measurement interval shall be constrained such that it ends at the end of a gating block.
+Incomplete gating blocks at the end of the measurement interval are not used."
+
+But especially when linking against ffmpeg only here I have the exact number of frames/samples.
+So here I can have two cases: 1. nsamples / chs < stepi in this case nsamples should be discarded 
+2. stepi < nsamples / chs < gblock in  this case I would have a complete gating block and it should go through the while
+    */
+    
     if (thisWorkerArgs->lkfsflag)
     {
 
@@ -3573,10 +3717,12 @@ worker_function_gated (void *argstruct)
 	/* Filtering stage one and two */
 	K_filter_stage1 (thisWorkerArgs->lg_buffers->bufferSwap,
 			 thisWorkerArgs->lg_buffers->bufferLG,
-			 thisWorkerArgs->nsamples / thisWorkerArgs->nch);
+			 thisWorkerArgs->nsamples / thisWorkerArgs->nch,
+			 thisWorkerArgs->Kcoeffs);
 	K_filter_stage2 (thisWorkerArgs->lg_buffers->bufferLG,
 			 thisWorkerArgs->lg_buffers->bufferSwap,
-			 thisWorkerArgs->nsamples / thisWorkerArgs->nch);
+			 thisWorkerArgs->nsamples / thisWorkerArgs->nch,
+			 thisWorkerArgs->Kcoeffs);
 	rectify (thisWorkerArgs->lg_buffers->bufferSwap,
 		 thisWorkerArgs->lg_buffers->bufferLG,
 		 thisWorkerArgs->nsamples / thisWorkerArgs->nch);
@@ -3608,7 +3754,7 @@ worker_function_gated (void *argstruct)
       pthread_mutex_unlock (&mutex);
     }				/* if (thisWorkerArgs->lkfsflag) */
 
-
+    /* lkfs */
 
   }				// loop through channels
 
@@ -3616,6 +3762,8 @@ worker_function_gated (void *argstruct)
 
   if (thisWorkerArgs->lkfsflag)
   {
+	/* following if is to avoid incrementing stepcounter in case there where not enough samples to fill a gating block */ 
+    if ((thisWorkerArgs->nsamples / thisWorkerArgs->nch) >= thisWorkerArgs->lg_ctx->ops) {
     pthread_mutex_lock (&mutex);
     if (copy_stepcounter % thisWorkerArgs->lg_ctx->subdivs == 0)
     {
@@ -3627,6 +3775,7 @@ worker_function_gated (void *argstruct)
 	copy_stepcounter % thisWorkerArgs->lg_ctx->subdivs;
     }
     pthread_mutex_unlock (&mutex);
+    }
   }
 
 
@@ -5020,6 +5169,7 @@ lkfs_finalcomputation_withdolbydi (LG * pt_lgctx, int *pt_chgateconf,
     printf ("LKFS(DI): %.2f\n", DILKFS);
   }
   free (ch_accumulator);
+  free (dich_accumulator);	
 }
 
 
@@ -5088,7 +5238,7 @@ leqmtosum (double leqm, double ref)
 
 
 int
-K_filter_stage1 (double *smp_out, double *smp_in, int nsamples)
+  K_filter_stage1 (double *smp_out, double *smp_in, int nsamples, coeff * coeff_ctx)
 {
   /* I have to limit it for the first 2 samples */
   /* This is coming from ITU ... */
@@ -5099,19 +5249,18 @@ K_filter_stage1 (double *smp_out, double *smp_in, int nsamples)
     switch (i)
     {
     case 0:
-      smp_out[i] = 1.535124859586697 * smp_in[i];
+      smp_out[i] = coeff_ctx->hsb0 * smp_in[i];
       break;
     case 1:
       smp_out[i] =
-	1.535124859586697 * smp_in[i] - 2.69169618940638 * smp_in[i - 1] +
-	1.69065929318241 * smp_out[i - 1];
+	coeff_ctx->hsb0 * smp_in[i] + coeff_ctx->hsb1 * smp_in[i - 1] -
+	coeff_ctx->hsa1 * smp_out[i - 1];
       break;
     default:
       smp_out[i] =
-	1.535124859586697 * smp_in[i] - 2.69169618940638 * smp_in[i - 1] +
-	1.19839281085285 * smp_in[i - 2] + 1.69065929318241 * smp_out[i -
-								      1] -
-	0.73248077421585 * smp_out[i - 2];
+	coeff_ctx->hsb0 * smp_in[i] + coeff_ctx->hsb1 * smp_in[i - 1] +
+	coeff_ctx->hsb2 * smp_in[i - 2] - coeff_ctx->hsa1 * smp_out[i - 1] -
+	coeff_ctx->hsa2 * smp_out[i - 2];
       break;
     }
   }
@@ -5120,7 +5269,7 @@ K_filter_stage1 (double *smp_out, double *smp_in, int nsamples)
 
 
 int
-K_filter_stage2 (double *smp_out, double *smp_in, int nsamples)
+  K_filter_stage2 (double *smp_out, double *smp_in, int nsamples, coeff * coeff_ctx)
 {
   /* I have to limit it for the first 2 samples */
   /* This coefficient are only for 48kHz sample rate */
@@ -5129,17 +5278,17 @@ K_filter_stage2 (double *smp_out, double *smp_in, int nsamples)
     switch (i)
     {
     case 0:
-      smp_out[i] = 1.0 * smp_in[i];
+      smp_out[i] = coeff_ctx->hpb0 * smp_in[i];
       break;
     case 1:
       smp_out[i] =
-	1.0 * smp_in[i] - 2.0 * smp_in[i - 1] +
-	1.99004745483398 * smp_out[i - 1];
+	coeff_ctx->hpb0 * smp_in[i] + coeff_ctx->hpb1 * smp_in[i - 1] -
+	coeff_ctx->hpa1 * smp_out[i - 1];
       break;
     default:
       smp_out[i] =
-	1.0 * smp_in[i] - 2.0 * smp_in[i - 1] + 1.0 * smp_in[i - 2] +
-	1.99004745483398 * smp_out[i - 1] - 0.99007225036621 * smp_out[i - 2];
+	coeff_ctx->hpb0 * smp_in[i] + coeff_ctx->hpb1 * smp_in[i - 1] + coeff_ctx->hpb2 * smp_in[i - 2] -
+	coeff_ctx->hpa1 * smp_out[i - 1] - coeff_ctx->hpa2 * smp_out[i - 2];
       break;
     }
   }
@@ -5717,9 +5866,15 @@ M_filter (double *smp_out, double *smp_in, int samples, int samplerate)
 
       Things to do:
       - Look at the notes from Zurich
-      - implement overlapping by percentual also for DolbyDI integration
+      - implement overlapping by percentual also for DolbyDI integration (render it modifiable)
       - implement level gating indipendent from dolby DI (at present can only be combined with dolbydi)
       - implement the A and C weightings
       - I should tend at using a single worker_function ( apart from di_worker_function for preprocessing )
-
+      - delete workingbranch on gitlab
+      - train tensorflow model for DI (I could use trailer for the training, automate data extraction)
+      - add switch for printing out detailed DI information
+      - report discarded samples for LKFS measurement
+      - implement TruePeak according to ITU
+      - implement Leq(M) according to LKFS logic with and without gating
+      - test audio data with only a single subdivision (single full gating Block at the end instead of say four)
     */
