@@ -155,6 +155,17 @@ gcc -g3 -O0 -I/usr/include/di -lm -lpthread -lrt -lavformat -lavcodec -lavutil -
 SRC_DATA src_data;
 #endif
 */
+
+typedef struct {
+
+  double * vector; //TruePeak in each channel
+  int oversampling_ratio;
+  int filtertaps;
+  double * filter_coeffs; //interpolation coefficients
+
+
+} TruePeak;
+
 struct Sum
 {
   double csum;			// convolved sum
@@ -215,6 +226,26 @@ typedef struct LevelGate
   double **oldBufferBackup;	//i is channel, j is sample
 } LG;
 
+
+typedef struct LevelGateLeqM
+{
+  int gblocksize;		// in samples derived from sampling rate and block size in ms (no channel interleaving considered)
+  int stepcounter;		//also keeps track of processed steps and total array length of results
+  int totalsteps;		// at end of processing this will differ from stepcounter
+  int shortperiods;		// totalsteps  should be equal to subdivs * shortperiods
+  double ***LGresultarray;	//first index channels[i], second step short period[j] and third overlap step [k] (input for final calculation)
+  int ops;			//offset per step in samples, derived from percentual overlap
+  float overlap;		// percent
+  int subdivs;			//this is necessary inside the worker to avoid cuncurrency
+  float gatingThresholdFix;	// LKFS
+  float relativeThresholdNegativeOffset;	// LKFS
+  double *chgainconf;		// ITU 1770-4 gives only the 5.1 numbers. Not really there is a long list
+  int *chgateconf;		// for LKFS should be 3 for all channels except subwoofer
+  double **oldBufferBackup;	//i is channel, j is sample
+} LGLeqM;
+
+
+
 typedef struct Lg_Buffer
 {
   double *bufferA;		//No Interleave 
@@ -223,6 +254,15 @@ typedef struct Lg_Buffer
   double *bufferSwap;
 } LG_Buf;
 
+
+
+typedef struct Lg_BufferLeqM
+{
+  double *bufferA;		//No Interleave 
+  double *bufferB;
+  double *bufferLG;
+  double *bufferSwap;
+} LG_BufLeqM;
 
 
 struct WorkerArgs
@@ -250,11 +290,16 @@ struct WorkerArgs
   unsigned int *samples_read_array;
   int leqm10flag;
   int lkfsflag;
+  int leqmdiflag;
   int polyflag;
+  int truepeakflag;
+  TruePeak * truepeak;
   unsigned int sample_rate;	//needed by DI
   int channel;			//this is the channel being worked on at present. Needed by DI.
   LG *lg_ctx;
   LG_Buf *lg_buffers;
+  LGLeqM *lg_ctx_leqmdi;
+  LG_Buf *lg_buffers_leqmdi;
 #ifdef SNDFILELIB
   double src_output;
 #endif
@@ -263,6 +308,7 @@ struct WorkerArgs
 
 
 LG * LGCtx;
+LGLeqM * LGCtxLeqMDI;
 
 coeff * coeffs;
 
@@ -299,6 +345,7 @@ void inversefft1 (double *eqfreqresp, double *ir, int npoints);
 void inversefft2 (double *eqfreqresp, double *ir, int npoints);
 void *worker_function (void *argstruct);
 void *worker_function_gated (void *argstruct);
+void *worker_function_gated2 (void *argstruct);
 #ifdef DI
 void *di_worker_function (void *argstruct);
 #endif
@@ -332,15 +379,24 @@ void print_di (int nchannels, int nshorttermperiods,
 void dolbydifinalcomputation (double **sc_staa, uint8_t ** stdda, int nch,
 			      int stpn, int chgateconfarray[],
 			      struct Sum *ptSum);
+void dolbydifinalcomputation2 (LGLeqM * pt_lgctx_leqmdi, int *pt_chgateconf,
+				        int nchannels,
+					uint8_t ** stdda,
+			       double adlgthreshold);
 #endif
 double leqmtosum (double leqm, double ref);
 void levelgatefinalcomputation (double **sc_staa, double linearthreshold, int nch, int stpn, struct Sum *ptSum);	//<-- Look at this 
 void lkfs_finalcomputation (LG * pt_lgctx, int *pt_chgateconf,
-			    double *pt_chgainconf, int nchannels);
+			    int nchannels);
 void lkfs_finalcomputation_withdolbydi (LG * pt_lgctx, int *pt_chgateconf,
-					double *pt_chgainconf, int nchannels,
+					int nchannels,
 					uint8_t ** stdda,
 					double adlgthreshold);
+
+double * calc_lp_os_coeffs(int samplerate, int os_factor, int taps);
+double truepeakcheck(double * in_buf, int ns, double truepeak, int os_ratio, int filtertaps, double * coeff_vector);
+TruePeak * init_truepeak_ctx( int ch, int os, int taps );
+int freetruepeak(TruePeak * tp);
 
 int calcSampleStepLG (float percentOverlap, int samplerate, int LGbufferms);
 int K_filter_stage1 (double *smp_out, double *smp_in, int nsamples, coeff * coeffctx);
@@ -560,6 +616,7 @@ main (int argc, const char **argv)
   // double normalizer;
   int timing = 0;
   int dolbydi = 0;
+  int dolbydialt = 0;
   int levelgated = 0;
   //double agsthreshold = 33.0; //Think about a sensible percentage value 
   /* the following variables are related to dolbydi */
@@ -609,6 +666,7 @@ main (int argc, const char **argv)
     ("leqm-nrt  Copyright (C) 2011-2013, 2017-2020 Luca Trisciani\nThis program comes with ABSOLUTELY NO WARRANTY,\nfor details on command line parameters see --help\nFirst argument is the audio file to be measured.\nOther parameters can follow in free order.\nThis is free software, and you are welcome to redistribute it\nunder the GPL v3 licence.\nProgram will use 1 + %d slave threads.\n",
      numCPU);
   //SndfileHandle file;
+  int oversampling_factor = 4;
 #ifdef SNDFILELIB
   SNDFILE *file;
   file = NULL;
@@ -672,11 +730,15 @@ main (int argc, const char **argv)
   int leqnw = 0;
   int lkfs = 0;
   int poly = 1; //default to polynomial filtering starting from v. 0.20
+  int truepeak = 0;
+  TruePeak * truepeak_ctx;
+
+
   char soundfilename[2048];
   // This is a requirement of sndfile library, do not forget it.
 
   const char helptext[] =
-    "Order of parameters after audio file is free.\nPossible parameters are:\n--convpoints <integer number> \tUse convolution with n points interpolation instead of polynomial filter.\n\t\t\t\tDefault is polynomial filter.\n--numcpus <integer number> \tNumber of slave threads to speed up operation.\n--timing \t\t\tFor benchmarking speed.\n--chconfcal <dB correction> <dB correction> <etc. so many times as channels>\n--leqnw\t\t\t\toutput leq with no weighting\n--logleqm10\t\t\t(will also print Allen metric as output)\n--lkfs\t\t\t\tSwitch LKFS ITU 1770-4 on.\n--dolbydi\t\t\tSwitch Dolby Dialogue Intelligence on\n--chgateconf <0|1|2>, 0 = no gate, 1 = level gate (in dB) and 2 = dialogue gate\n--agsthreshold <speech %%>\tFor Leq(M,DI) and LKFS(DI) default 33%%.\n--levelgate <Leq(M)>\t\tThis will force level gating and deactivate speech gating\n--threshold <Leq(M)>\t\tThreshold used for Allen metric (default 80)\n--longperiod <minutes>\t\tLong period for leqm10 (default 10)\n--logleqm\t\t\tLog Leq(M) from start every buffersize ms.\n--buffersize <milliseconds>\t\t\tSize of Buffer in milliseconds.\nUsing:\ngnuplot -e \"plot \\\"logfile.txt\\\" u 1:2; pause -1\"\nit is possible to directly plot the logged data.\n";
+    "Order of parameters after audio file is free.\nPossible parameters are:\n--convpoints <integer number> \tUse convolution with n points interpolation instead of polynomial filter.\n\t\t\t\tDefault is polynomial filter.\n--numcpus <integer number> \tNumber of slave threads to speed up operation.\n--timing \t\t\tFor benchmarking speed.\n--chconfcal <dB correction> <dB correction> <etc. so many times as channels>\n--leqnw\t\t\t\toutput leq with no weighting\n--logleqm10\t\t\t(will also print Allen metric as output)\n--lkfs\t\t\t\tSwitch LKFS ITU 1770-4 on.\n--dolbydi\t\t\tSwitch Dolby Dialogue Intelligence on\n--chgateconf <0|1|2>, 0 = no gate, 1 = level gate (in dB) and 2 = dialogue gate\n--agsthreshold <speech %%>\tFor Leq(M,DI) and LKFS(DI) default 33%%.\n--levelgate <Leq(M)>\t\tThis will force level gating and deactivate speech gating\n--threshold <Leq(M)>\t\tThreshold used for Allen metric (default 80)\n--longperiod <minutes>\t\tLong period for leqm10 (default 10)\n--logleqm\t\t\tLog Leq(M) from start every buffersize ms.\n--buffersize <milliseconds>\t\t\tSize of Buffer in milliseconds.\n--truepeak\t\t\tShow true peak value\nUsing:\ngnuplot -e \"plot \\\"logfile.txt\\\" u 1:2; pause -1\"\nit is possible to directly plot the logged data.\n";
 
 
   if (argc == 1)
@@ -918,6 +980,15 @@ main (int argc, const char **argv)
       continue;
 
     }
+    if (strcmp (argv[in], "--truepeak") == 0)
+    {
+      truepeak = 1;
+      in++;
+      printf
+	("True Peak value will be shown.\n");
+      continue;
+
+    }
 #ifdef DI
     if (strcmp (argv[in], "--agsthreshold") == 0)
     {
@@ -990,6 +1061,16 @@ main (int argc, const char **argv)
       continue;
 
     }
+    /*
+        if (strcmp (argv[in], "--leqmdi") == 0)
+    {
+      lkfs = 1;
+      in++;
+      printf ("Show Leq(M,DI) measurement.\n");
+      continue;
+
+      }*/
+    
     /*
     if (strcmp (argv[in], "--polynomial") == 0)
     {
@@ -1110,7 +1191,9 @@ main (int argc, const char **argv)
 // Open audio file
 
 //postprocessing parameters
+      
 #ifdef SNDFILELIB
+      
   if (numcalread == sfinfo.channels)
   {
     for (int cind = 0; cind < sfinfo.channels; cind++)
@@ -1149,6 +1232,7 @@ main (int argc, const char **argv)
       ("Using input channel calibration for 7.1 configuration:\n0 0 0 0 -3 -3 -3 -3\n");
 
   }
+
 #elif defined FFMPEG
 
   if (numcalread == codecContext->channels)
@@ -1200,6 +1284,39 @@ main (int argc, const char **argv)
     return 0;
   }
 
+  if (truepeak)
+    {
+#ifdef SNDFILELIB
+      switch(sfinfo.samplerate)
+#elif defined FFMPEG
+	switch(codecContext->sample_rate)
+#endif
+      {
+    case 44100:
+      oversampling_factor = 4;
+      break;
+    case 48000:
+      oversampling_factor = 4;
+      break;
+    case 96000:
+      oversampling_factor = 2;
+      break;
+    default:
+      oversampling_factor = 1; // no oversampling
+      break;
+    }
+
+      
+      //initialize oversampling filter
+#ifdef FFMPEG
+      truepeak_ctx = init_truepeak_ctx(codecContext->channels, oversampling_factor, 48);
+      truepeak_ctx->filter_coeffs = calc_lp_os_coeffs(codecContext->sample_rate, oversampling_factor, 48);
+
+#elif defined SNDFILELIB
+      truepeak_ctx = init_truepeak_ctx(sfinfo.channels, oversampling_factor, 48);
+      truepeak_ctx->filter_coeffs = calc_lp_os_coeffs(sfinfo.samplerate, oversampling_factor, 48); 
+#endif
+  }
 
 
 
@@ -1289,7 +1406,7 @@ main (int argc, const char **argv)
 
   if (convpointsset) {
     poly = 0;
-    printf("Using convoluzion instead of polynomial filtering.");
+    printf("Using convolution instead of polynomial filtering.\n");
   }
   
   if (lkfs)
@@ -1307,6 +1424,9 @@ main (int argc, const char **argv)
   
     
   }
+
+
+
   // reading to a double or float buffer with sndfile take care of normalization
   /*
      static double  buffer[BUFFER_LEN]; // it seems this must be static. I don't know why
@@ -1625,9 +1745,207 @@ main (int argc, const char **argv)
 #endif
   }				/* if (lkfs) */
 
+#ifdef DI
+  /* LEQMDI Insert*/
+
+
+  if (dolbydi)
+  {
+
+    LGCtxLeqMDI = malloc (sizeof (LGLeqM));	// this must be freed
+    LGCtxLeqMDI->overlap = 75.0;	//pecentage overlap. should become a command line switch later, default to this value as ITU 1770-4.
+    LGCtxLeqMDI->stepcounter = 0;
+    LGCtxLeqMDI->gatingThresholdFix = -70.0;
+    LGCtxLeqMDI->relativeThresholdNegativeOffset = -10.0;
+
+
+#ifdef SNDFILELIB
+    //calculate step offset from percent overlap
+    LGCtxLeqMDI->ops =
+      calcSampleStepLG (LGCtxLeqMDI->overlap, sfinfo.samplerate, buffersizems);
+    LGCtxLeqMDI->gblocksize = (sfinfo.samplerate * buffersizems / 1000);	//At present this is the same as buffersizems, but in samples (no interleaving)
+
+
+    
+    
+    //first calculate or guestimate total step number, see stepcounter in LG 
+    int remainder = sfinfo.frames % LGCtxLeqMDI->ops;
+
+    /* total step calculation */
+
+    if (remainder == 0)
+    {
+      LGCtxLeqMDI->totalsteps = sfinfo.frames / LGCtxLeqMDI->ops;
+    }
+    else
+      LGCtxLeqMDI->totalsteps = sfinfo.frames / LGCtxLeqMDI->ops + 1;
+
+    remainder = LGCtxLeqMDI->gblocksize % LGCtxLeqMDI->ops;
+
+    if (!(remainder))
+    {
+      LGCtxLeqMDI->subdivs = LGCtxLeqMDI->gblocksize / LGCtxLeqMDI->ops;
+      //LGCtx->shortperiods = LGCtx->totalsteps / LGCtx->subdivs;
+    }
+    else
+    {
+      LGCtxLeqMDI->subdivs = LGCtxLeqMDI->gblocksize / LGCtxLeqMDI->ops + 1;
+      //  LGCtx->shortperiods = LGCtx->totalsteps / LGCtx->subdivs + 1;
+    }
+
+    remainder = LGCtxLeqMDI->totalsteps % LGCtxLeqMDI->subdivs;
+    if (!remainder)
+    {
+      LGCtxLeqMDI->shortperiods = LGCtxLeqMDI->totalsteps / LGCtxLeqMDI->subdivs;
+    }
+    else
+    {
+
+      LGCtxLeqMDI->shortperiods = LGCtxLeqMDI->totalsteps / LGCtxLeqMDI->subdivs + 1;
+    }
+
+    LGCtxLeqMDI->LGresultarray = allocateLGresultarray (sfinfo.channels, LGCtxLeqMDI->shortperiods, LGCtxLeqMDI->subdivs);	//numbershortperiods is not the real length of the data, see above
+    LGCtxLeqMDI->chgainconf = malloc (sizeof (double) * sfinfo.channels);
+    LGCtxLeqMDI->chgateconf = malloc (sizeof (double) * sfinfo.channels);
+    //maybe
+    //other speaker configurations?
+    if (sfinfo.channels == 6)
+    {
+      LGCtxLeqMDI->chgainconf[0] = 1;
+      LGCtxLeqMDI->chgainconf[1] = 1;
+      LGCtxLeqMDI->chgainconf[2] = 1;
+      LGCtxLeqMDI->chgainconf[3] = 0;
+      LGCtxLeqMDI->chgainconf[4] = 1.41;
+      LGCtxLeqMDI->chgainconf[5] = 1.41;
+
+      LGCtxLeqMDI->chgateconf[0] = 3;
+      LGCtxLeqMDI->chgateconf[1] = 3;
+      LGCtxLeqMDI->chgateconf[2] = 3;
+      LGCtxLeqMDI->chgateconf[3] = 0;
+      LGCtxLeqMDI->chgateconf[4] = 3;
+      LGCtxLeqMDI->chgateconf[5] = 3;
 
 
 
+    }
+    else
+    {
+      for (int i = 0; i < sfinfo.channels; i++)
+      {
+	LGCtxLeqMDI->chgainconf[i] = 1;
+	if (i != 3)
+	{
+	  LGCtxLeqMDI->chgateconf[i] = 3;
+	}
+	else
+	{
+	  LGCtxLeqMDI->chgateconf[i] = 0;
+	}
+      }
+    }
+    //first calculate or guestimate total step number, see stepcounter in LG
+    //allocate overlap result array, see olresultarrey in LG
+
+
+
+#elif defined FFMPEG
+
+    //calculate step offset from percent overlap
+    LGCtxLeqMDI->ops =
+      calcSampleStepLG (LGCtxLeqMDI->overlap, codecContext->sample_rate,
+			buffersizems);
+    LGCtxLeqMDI->gblocksize = (codecContext->sample_rate * buffersizems / 1000);	//At present this is the same as buffersizems, but in samples (no interleaving)
+    //first calculate or guestimate total step number, see stepcounter in LG 
+    LGCtxLeqMDI->totalsteps =
+      ((int)
+       (18000.00 /
+	(((double) LGCtxLeqMDI->ops) / ((double) codecContext->sample_rate)))) + 1;
+
+    int remainder = LGCtxLeqMDI->gblocksize % LGCtxLeqMDI->ops;
+    /*subdivs */
+    if (!(remainder))
+    {
+      LGCtxLeqMDI->subdivs = LGCtxLeqMDI->gblocksize / LGCtxLeqMDI->ops;
+    }
+    else
+    {
+      LGCtxLeqMDI->subdivs = LGCtxLeqMDI->gblocksize / LGCtxLeqMDI->ops + 1;
+    }
+    /* shortperiods */
+
+    remainder = LGCtxLeqMDI->totalsteps % LGCtxLeqMDI->subdivs;
+    if (!remainder)
+    {
+      LGCtxLeqMDI->shortperiods = LGCtxLeqMDI->totalsteps / LGCtxLeqMDI->subdivs;
+    }
+    else
+    {
+      LGCtxLeqMDI->shortperiods = LGCtxLeqMDI->totalsteps / LGCtxLeqMDI->subdivs + 1;
+
+    }
+    LGCtxLeqMDI->LGresultarray = allocateLGresultarray (codecContext->channels, LGCtxLeqMDI->shortperiods, LGCtxLeqMDI->subdivs);	//numbershortperiods is not the real length of data
+    //first calculate or guestimate total step number, see stepcounter in LG
+    //allocate overlap result array, see olresultarrey in LG
+
+    LGCtxLeqMDI->chgainconf = malloc (sizeof (double) * codecContext->channels);
+    LGCtxLeqMDI->chgateconf = malloc (sizeof (double) * codecContext->channels);
+    //maybe 
+    if (codecContext->channels == 6)
+    {
+      LGCtxLeqMDI->chgainconf[0] = 1;
+      LGCtxLeqMDI->chgainconf[1] = 1;
+      LGCtxLeqMDI->chgainconf[2] = 1;
+      LGCtxLeqMDI->chgainconf[3] = 0;
+      LGCtxLeqMDI->chgainconf[4] = 1.41;
+      LGCtxLeqMDI->chgainconf[5] = 1.41;
+
+      LGCtxLeqMDI->chgateconf[0] = 3;
+      LGCtxLeqMDI->chgateconf[1] = 3;
+      LGCtxLeqMDI->chgateconf[2] = 3;
+      LGCtxLeqMDI->chgateconf[3] = 0;
+      LGCtxLeqMDI->chgateconf[4] = 3;
+      LGCtxLeqMDI->chgateconf[5] = 3;
+
+      //remember to costrain buffersizems to 400ms in case lkfs is used
+    }
+    else
+    {
+      for (int i = 0; i < codecContext->channels; i++)
+      {
+	LGCtxLeqMDI->chgainconf[i] = 1;
+	if (i != 3)
+	{
+	  LGCtxLeqMDI->chgateconf[i] = 3;
+	}
+	else
+	{
+	  LGCtxLeqMDI->chgateconf[i] = 0;
+	}
+      }
+    }
+#endif
+
+#ifdef SNDFILELIB
+    LGCtxLeqMDI->oldBufferBackup = malloc (sizeof (double *) * sfinfo.channels);
+    for (int i = 0; i < sfinfo.channels; i++)
+    {
+      LGCtxLeqMDI->oldBufferBackup[i] =
+	malloc (sizeof (double) * LGCtxLeqMDI->gblocksize);
+    }
+#elif defined FFMPEG
+    LGCtxLeqMDI->oldBufferBackup =
+      malloc (sizeof (double *) * codecContext->channels);
+    for (int i = 0; i < codecContext->channels; i++)
+    {
+      *(LGCtxLeqMDI->oldBufferBackup + i) =
+	malloc (sizeof (double) * LGCtxLeqMDI->gblocksize);
+    }
+#endif
+  }				/* if (lkfs) */
+
+  /* END LEQMDI INSERT */
+
+#endif //this closes #ifdef DI
 
 if (!poly) {
 
@@ -2429,6 +2747,13 @@ while (av_read_frame (formatContext, &readingPacket) == 0)
 	    WorkerArgsArray[worker_id]->ptrtotsum = totsum;
 
 	    WorkerArgsArray[worker_id]->chconf = channelconfcalvector;
+	    if (truepeak) {
+	    WorkerArgsArray[worker_id]->truepeakflag = 1;
+	    WorkerArgsArray[worker_id]->truepeak = truepeak_ctx;
+	    } else {
+	      WorkerArgsArray[worker_id]->truepeakflag = 0;
+	    }
+
 #ifdef DI
 	    if ((leqm10) || (dolbydi))
 	    {
@@ -2479,6 +2804,27 @@ while (av_read_frame (formatContext, &readingPacket) == 0)
 	    {
 	      WorkerArgsArray[worker_id]->lkfsflag = 0;
 	    }
+
+#ifdef DI
+	    /* LEQMDI INSERT */
+
+
+	    if (dolbydi)
+	    {
+	      WorkerArgsArray[worker_id]->shorttermindex = staindex; // but where is this counter incremented if no lkfs or leqm10, see also preceding if
+	      WorkerArgsArray[worker_id]->lg_ctx_leqmdi = LGCtxLeqMDI;
+	      WorkerArgsArray[worker_id]->leqmdiflag = 1;
+	      WorkerArgsArray[worker_id]->lg_buffers_leqmdi =
+		allocateLGBuffer (LGCtxLeqMDI->gblocksize);
+	    }
+	    else
+	    {
+	      WorkerArgsArray[worker_id]->leqmdiflag = 0;
+	    }
+	    /* END LEQMDI INSERT */
+#endif
+
+
 	    if (poly)
 	    {
 	      WorkerArgsArray[worker_id]->polyflag = 1;
@@ -2525,7 +2871,7 @@ while (av_read_frame (formatContext, &readingPacket) == 0)
 	    if (dolbydi)
 	    {
 	      pthread_create (&tid[worker_id], &attr,
-			      worker_function_gated,
+			      worker_function_gated2,
 			      WorkerArgsArray[worker_id]);
 	    }
 	    else
@@ -2548,8 +2894,13 @@ while (av_read_frame (formatContext, &readingPacket) == 0)
 		WorkerArgsArray[idxcpu]->argbuffer = NULL;
 		if (lkfs)
 		{
-		  WorkerArgsArray[worker_id]->lg_ctx = NULL;
-		  freeLGBuffer (WorkerArgsArray[worker_id]->lg_buffers);
+		  WorkerArgsArray[idxcpu]->lg_ctx = NULL; //here index was worker_id but it must have been wrong!
+		  freeLGBuffer (WorkerArgsArray[idxcpu]->lg_buffers);
+		}
+		if (dolbydi)
+		{
+		  WorkerArgsArray[idxcpu]->lg_ctx_leqmdi = NULL;
+		  freeLGBuffer (WorkerArgsArray[idxcpu]->lg_buffers_leqmdi);
 		}
 		free (WorkerArgsArray[idxcpu]);
 		WorkerArgsArray[idxcpu] = NULL;
@@ -2624,6 +2975,15 @@ if (copiedsamples < buffersizesamples)
   WorkerArgsArray[worker_id]->ptrtotsum = totsum;
 
   WorkerArgsArray[worker_id]->chconf = channelconfcalvector;
+  if (truepeak) {
+  WorkerArgsArray[worker_id]->truepeakflag = 1;
+  WorkerArgsArray[worker_id]->truepeak = truepeak_ctx;
+  } else {
+	      WorkerArgsArray[worker_id]->truepeakflag = 0;
+	    }
+
+
+
 #ifdef DI
   if ((leqm10) || (dolbydi))
   {
@@ -2673,6 +3033,26 @@ if (copiedsamples < buffersizesamples)
   {
     WorkerArgsArray[worker_id]->lkfsflag = 0;
   }
+  
+#ifdef DI
+	    /* LEQMDI INSERT */
+
+
+	    if (dolbydi)
+	    {
+	      WorkerArgsArray[worker_id]->shorttermindex = staindex; // but where is this counter incremented if no lkfs or leqm10, see also preceding if
+	      WorkerArgsArray[worker_id]->lg_ctx_leqmdi = LGCtxLeqMDI;
+	      WorkerArgsArray[worker_id]->leqmdiflag = 1;
+	      WorkerArgsArray[worker_id]->lg_buffers_leqmdi =
+		allocateLGBuffer (LGCtxLeqMDI->gblocksize);
+	    }
+	    else
+	    {
+	      WorkerArgsArray[worker_id]->leqmdiflag = 0;
+	    }
+	    /* END LEQMDI INSERT */
+#endif
+
   if (poly)
   {
     WorkerArgsArray[worker_id]->polyflag = 1;
@@ -2693,7 +3073,7 @@ if (copiedsamples < buffersizesamples)
 #ifdef DI
   if (dolbydi)
   {
-    pthread_create (&tid[worker_id], &attr, worker_function_gated,
+    pthread_create (&tid[worker_id], &attr, worker_function_gated2,
 		    WorkerArgsArray[worker_id]);
   }
   else
@@ -2712,6 +3092,11 @@ if (copiedsamples < buffersizesamples)
   {
     WorkerArgsArray[worker_id]->lg_ctx = NULL;
     freeLGBuffer (WorkerArgsArray[worker_id]->lg_buffers);
+  }
+  if (dolbydi)
+  {
+    WorkerArgsArray[worker_id]->lg_ctx_leqmdi = NULL;
+    freeLGBuffer (WorkerArgsArray[worker_id]->lg_buffers_leqmdi);
   }
   free (WorkerArgsArray[worker_id]);
   WorkerArgsArray[worker_id] = NULL;
@@ -2759,6 +3144,15 @@ WorkerArgsArray[worker_id]->ir = ir;
 WorkerArgsArray[worker_id]->ptrtotsum = totsum;
 
 WorkerArgsArray[worker_id]->chconf = channelconfcalvector;
+if (truepeak) {
+  WorkerArgsArray[worker_id]->truepeakflag = 1;
+  WorkerArgsArray[worker_id]->truepeak = truepeak_ctx;
+} else {
+	      WorkerArgsArray[worker_id]->truepeakflag = 0;
+	    }
+
+  
+
 #ifdef DI
 if ((leqm10) || (dolbydi))
 {
@@ -2808,6 +3202,27 @@ else
   WorkerArgsArray[worker_id]->lkfsflag = 0;
 }
 
+
+#ifdef DI
+	    /* LEQMDI INSERT */
+
+
+	    if (dolbydi)
+	    {
+	      WorkerArgsArray[worker_id]->shorttermindex = staindex; // but where is this counter incremented if no lkfs or leqm10, see also preceding if
+	      WorkerArgsArray[worker_id]->lg_ctx_leqmdi = LGCtxLeqMDI;
+	      WorkerArgsArray[worker_id]->leqmdiflag = 1;
+	      WorkerArgsArray[worker_id]->lg_buffers_leqmdi =
+		allocateLGBuffer (LGCtxLeqMDI->gblocksize);
+	    }
+	    else
+	    {
+	      WorkerArgsArray[worker_id]->leqmdiflag = 0;
+	    }
+	    /* END LEQMDI INSERT */
+#endif
+
+  
 if (poly)
 {
   WorkerArgsArray[worker_id]->polyflag = 1;
@@ -2829,7 +3244,7 @@ pthread_attr_init (&attr);
 #ifdef DI
 if (dolbydi)
 {
-  pthread_create (&tid[worker_id], &attr, worker_function_gated,
+  pthread_create (&tid[worker_id], &attr, worker_function_gated2,
 		  WorkerArgsArray[worker_id]);
 }
 else
@@ -2852,8 +3267,13 @@ if (worker_id == numCPU)
     WorkerArgsArray[idxcpu]->argbuffer = NULL;
     if (lkfs)
     {
-      WorkerArgsArray[worker_id]->lg_ctx = NULL;
-      freeLGBuffer (WorkerArgsArray[worker_id]->lg_buffers);
+      WorkerArgsArray[idxcpu]->lg_ctx = NULL;
+      freeLGBuffer (WorkerArgsArray[idxcpu]->lg_buffers);
+    }
+    if (dolbydi)
+    {
+      WorkerArgsArray[idxcpu]->lg_ctx_leqmdi = NULL;
+      freeLGBuffer (WorkerArgsArray[idxcpu]->lg_buffers_leqmdi);
     }
     free (WorkerArgsArray[idxcpu]);
     WorkerArgsArray[idxcpu] = NULL;
@@ -2884,6 +3304,17 @@ if (worker_id != 0)
     pthread_join (tid[idxcpu], NULL);
     free (WorkerArgsArray[idxcpu]->argbuffer);
     WorkerArgsArray[idxcpu]->argbuffer = NULL;
+    if (lkfs)
+    {
+      WorkerArgsArray[idxcpu]->lg_ctx = NULL;
+      freeLGBuffer (WorkerArgsArray[idxcpu]->lg_buffers);
+    }
+    if (dolbydi)
+    {
+      WorkerArgsArray[idxcpu]->lg_ctx_leqmdi = NULL;
+      freeLGBuffer (WorkerArgsArray[idxcpu]->lg_buffers_leqmdi);
+    }
+    
     free (WorkerArgsArray[idxcpu]);
     WorkerArgsArray[idxcpu] = NULL;
   }
@@ -2912,17 +3343,36 @@ if (worker_id != 0)
 
  // mean of scalar sum over duration
 #ifdef DI
-if ((dolbydi) && !(lkfs))
+if (dolbydi)
 {
 #ifdef FFMPEG
-  dolbydifinalcomputation (sc_shorttermaveragedarray,
+
+
+ dolbydifinalcomputation2 ( LGCtxLeqMDI, LGCtxLeqMDI->chgateconf,
+					codecContext->channels,
+					shorttermdidecisionarray,
+			    agsthreshold);
+
+#elif defined SNDFILELIB
+  dolbydifinalcomputation2 (LGCtxLeqMDI, LGCtxLeqMDI->chgateconf,
+			                 sfinfo.channels,
+					shorttermdidecisionarray,
+			    agsthreshold);
+#endif
+
+ } else if (dolbydialt) {
+
+#ifdef FFMPEG  
+   dolbydifinalcomputation (sc_shorttermaveragedarray,
 			   shorttermdidecisionarray, codecContext->channels,
 			   realnumbershortperiods, tempchgate, totsum);
 #elif defined SNDFILELIB
-  dolbydifinalcomputation (sc_shorttermaveragedarray,
+
+     dolbydifinalcomputation (sc_shorttermaveragedarray,
 			   shorttermdidecisionarray, sfinfo.channels,
 			   numbershortperiods, tempchgate, totsum);
 #endif
+     
   if (levelgated)
   {
 #ifdef FFMPEG
@@ -2947,12 +3397,21 @@ if ((dolbydi) && !(lkfs))
     printf ("Leq(noW): %.4f\n", totsum->rms);	// Leq(no Weighting)
   }
   printf ("Leq(M): %.4f\n", totsum->leqm);
-}
-else
-{
+ } // if (dolbydi) else if (dolbydialt)
+
 #endif
   meanoverduration (totsum);
+  if (truepeak) 
+  { printf("True Peak Full Scale per channel:\n");
+#ifdef FFMPEG
+    for (int i = 0; i < codecContext->channels; i++) {
+#elif defined SNDFILELIB
+    for (int i = 0; i < sfinfo.channels; i++) {
 
+#endif
+      printf("Ch %d: %.4f dBFS\n", i, log10(truepeak_ctx->vector[i]) * 10 + 12.04); // *10 because its power due to rectification
+    }
+  }
   if (leqnw)
   {
     printf ("Leq(noW): %.4f\n", totsum->rms);	// Leq(no Weighting)
@@ -2964,13 +3423,11 @@ else
     {
 #ifdef FFMPEG
       lkfs_finalcomputation_withdolbydi (LGCtx, LGCtx->chgateconf,
-					 LGCtx->chgainconf,
 					 codecContext->channels,
 					 shorttermdidecisionarray,
 					 agsthreshold);
 #elif defined SNDFILELIB
       lkfs_finalcomputation_withdolbydi (LGCtx, LGCtx->chgateconf,
-					 LGCtx->chgainconf,
 					 sfinfo.channels,
 					 shorttermdidecisionarray,
 					 agsthreshold);
@@ -2981,19 +3438,16 @@ else
 #endif
 #ifdef FFMPEG
       lkfs_finalcomputation (LGCtx, LGCtx->chgateconf,
-			     LGCtx->chgainconf, codecContext->channels);
+			     codecContext->channels);
 #elif defined SNDFILELIB
       lkfs_finalcomputation (LGCtx, LGCtx->chgateconf,
-			     LGCtx->chgainconf, sfinfo.channels);
+			     sfinfo.channels);
 #endif
 #ifdef DI
     }
 #endif
   }				// if (lkfs)
   printf ("Leq(M): %.4f\n", totsum->leqm);
-#ifdef DI
-}				//  if ((dolbydi) && !(lkfs)) {} else {
-#endif
 
 
 if (timing)
@@ -3191,6 +3645,50 @@ if (lkfs)
   
   }
 
+#ifdef DI
+  /* LEQMDI INSERT */
+
+if (dolbydi)
+{
+#ifdef SNDFILELIB
+  for (int i = 0; i < sfinfo.channels; i++)
+  {
+#elif defined FFMPEG
+  for (int i = 0; i < codecContext->channels; i++)
+  {
+#endif
+    free (LGCtxLeqMDI->oldBufferBackup[i]);
+    LGCtxLeqMDI->oldBufferBackup[i] = NULL;
+  }
+
+  free (LGCtxLeqMDI->oldBufferBackup);
+  LGCtxLeqMDI->oldBufferBackup = NULL;
+#ifdef SNDFILELIB
+  freeLGresultarray (sfinfo.channels, LGCtxLeqMDI->shortperiods,
+		     LGCtxLeqMDI->LGresultarray);
+#elif defined FFMPEG
+  freeLGresultarray (codecContext->channels, LGCtxLeqMDI->shortperiods,
+		     LGCtxLeqMDI->LGresultarray);
+#endif
+  free (LGCtxLeqMDI->chgainconf);
+  LGCtxLeqMDI->chgainconf = NULL;
+  free (LGCtxLeqMDI->chgateconf);
+  LGCtxLeqMDI->chgateconf = NULL;
+  free (LGCtxLeqMDI);
+  LGCtxLeqMDI = NULL;
+  
+  }
+
+
+  /* END LEQMDI INSERT*/
+#endif
+  
+ if (truepeak) {
+   freetruepeak(truepeak_ctx);
+   truepeak_ctx = NULL;
+ }
+
+
   if (!poly) {
 free (eqfreqsamples);
 eqfreqsamples = NULL;
@@ -3221,6 +3719,7 @@ av_frame_free (&frame);
 avcodec_close (codecContext);
 avformat_close_input (&formatContext);
 #endif
+
 return 0;
 }				// int main(...)
 
@@ -3301,6 +3800,19 @@ worker_function (void *argstruct)
 	//populate bufferA -- deinterleave
 	thisWorkerArgs->lg_buffers->bufferA[m] = thisWorkerArgs->argbuffer[n];	//
       }
+
+      /* New True Peak */
+
+      if (thisWorkerArgs->truepeakflag) {
+	double temp_truepeak = truepeakcheck(thisWorkerArgs->lg_buffers->bufferA, thisWorkerArgs->nsamples / thisWorkerArgs->nch, thisWorkerArgs->truepeak->vector[ch], thisWorkerArgs->truepeak->oversampling_ratio, thisWorkerArgs->truepeak->filtertaps, thisWorkerArgs->truepeak->filter_coeffs);
+	
+
+      	pthread_mutex_lock (&mutex);
+	thisWorkerArgs->truepeak->vector[ch] = temp_truepeak;
+	pthread_mutex_unlock (&mutex);
+      }
+
+      /* END INSERT */
       if (thisWorkerArgs->lg_ctx->stepcounter == 0)
       {				//this is problematic because lg_ctx is accessed by all threads / duplicate in lg_buffers outside the thread (before launching the thread)
 	//for (int n=ch, m= 0; n < thisWorkerArgs->nsamples; n += thisWorkerArgs->nch, m++) {
@@ -3421,11 +3933,13 @@ worker_function (void *argstruct)
 	pthread_mutex_lock (&mutex);
 	// this should be done under mutex conditions -> shared resources!
 	// assign provisional measure of leq (not yet gated)
+/*
 #ifdef DEBUG
 	printf
 	  ("LG block index: %d\t Channel: %d\t Sample sum: %.20f\n",
 	   copy_stepcounter, ch, tmp_sum);
 #endif
+*/
 	thisWorkerArgs->lg_ctx->LGresultarray[ch][thisWorkerArgs->shorttermindex][copy_stepcounter % thisWorkerArgs->lg_ctx->subdivs] = tmp_sum;	//<- if below relative threshold, but postpone gating for the finale calculation
 	pthread_mutex_unlock (&mutex);
 	copy_stepcounter++;
@@ -3733,11 +4247,13 @@ So here I can have two cases: 1. nsamples / chs < stepi in this case nsamples sh
 	pthread_mutex_lock (&mutex);
 	// this should be done under mutex conditions -> shared resources!
 	// assign provisional measure of leq (not yet gated)
+/*
 #ifdef DEBUG
 	printf
 	  ("LG block index: %d\t Channel: %d\t Sample sum: %.20f\n",
 	   copy_stepcounter, ch, tmp_sum);
 #endif
+*/
 	thisWorkerArgs->lg_ctx->LGresultarray[ch][thisWorkerArgs->shorttermindex][copy_stepcounter % thisWorkerArgs->lg_ctx->subdivs] = tmp_sum;	//<- if below relative threshold, but postpone gating for the finale calculation
 	pthread_mutex_unlock (&mutex);
 	copy_stepcounter++;
@@ -3806,6 +4322,472 @@ So here I can have two cases: 1. nsamples / chs < stepi in this case nsamples sh
   pthread_exit (0);
 
 }				//worker_function_gated
+
+
+/* The following is to experiment with integration of Dolby DI with Leq(M) with gating like LKFS */
+
+void *
+worker_function_gated2 (void *argstruct)
+{
+
+  struct WorkerArgs *thisWorkerArgs = (struct WorkerArgs *) argstruct;
+
+  double *sumandsquarebuffer;
+  double *csumandsquarebuffer;
+  double * chsumaccumulator_norm;
+  double * chsumaccumulator_conv;
+
+  int copy_stepcounter;
+
+
+  sumandsquarebuffer =
+    malloc (sizeof (double) *
+	    (thisWorkerArgs->nsamples / thisWorkerArgs->nch));
+
+
+  csumandsquarebuffer =
+    malloc (sizeof (double) *
+	    (thisWorkerArgs->nsamples / thisWorkerArgs->nch));
+
+  chsumaccumulator_norm = malloc(sizeof(double)*(thisWorkerArgs->nsamples / thisWorkerArgs->nch));
+
+  chsumaccumulator_conv = malloc(sizeof(double)*(thisWorkerArgs->nsamples / thisWorkerArgs->nch));
+
+
+
+  for (int i = 0; i < thisWorkerArgs->nsamples / thisWorkerArgs->nch; i++)
+  {
+    sumandsquarebuffer[i] = 0.0;
+    csumandsquarebuffer[i] = 0.0;
+    chsumaccumulator_norm[i] = 0.0;
+    chsumaccumulator_conv[i] = 0.0;
+  }
+
+
+
+  for (int ch = 0; ch < thisWorkerArgs->nch; ch++)
+  {
+
+    double *normalizedbuffer;
+    double *convolvedbuffer;
+
+
+    normalizedbuffer =
+      malloc (sizeof (double) *
+	      (thisWorkerArgs->nsamples / thisWorkerArgs->nch));
+
+    convolvedbuffer =
+      malloc (sizeof (double) *
+	      (thisWorkerArgs->nsamples / thisWorkerArgs->nch));
+
+
+    for (int n = ch, m = 0; n < thisWorkerArgs->nsamples;
+	 n += thisWorkerArgs->nch, m++)
+    {
+      // use this for calibration depending on channel config for ex. chconf[6] = {1.0, 1.0, 1.0, 1.0, 0.707945784, 0.707945784} could be the default for 5.1 soundtracks
+      //so not normalized but calibrated
+      normalizedbuffer[m] = thisWorkerArgs->argbuffer[n] * thisWorkerArgs->chconf[ch];	//this scale amplitude according to specified calibration
+
+
+    }
+
+
+    /* lkfs */
+    
+    
+    if (thisWorkerArgs->lkfsflag)
+    {
+      for (int n = ch, m = 0; n < thisWorkerArgs->nsamples;
+	   n += thisWorkerArgs->nch, m++)
+      {
+	//populate bufferA -- deinterleave
+	thisWorkerArgs->lg_buffers->bufferA[m] = thisWorkerArgs->argbuffer[n];	//
+      }
+      if (thisWorkerArgs->lg_ctx->stepcounter == 0)
+      {				//this is problematic because lg_ctx is accessed by all threads / duplicate in lg_buffers outside the thread (before launching the thread)
+	//for (int n=ch, m= 0; n < thisWorkerArgs->nsamples; n += thisWorkerArgs->nch, m++) {
+	//for (int i=0; i < thisWorkerArgs->lg_ctx->gblocksize; i++) {
+	for (int i = 0;
+	     i < thisWorkerArgs->nsamples / thisWorkerArgs->nch; i++)
+	{			//this is for the case that gblocksize is incomplete like at the end of a file
+	  thisWorkerArgs->lg_buffers->bufferB[i] = 0.0;	//This is for the first level gate block
+	}
+      }
+      else
+      {
+	memcpy (thisWorkerArgs->lg_buffers->bufferB, thisWorkerArgs->lg_ctx->oldBufferBackup[ch], sizeof (double) * (thisWorkerArgs->nsamples / thisWorkerArgs->nch));	// instead of thisWorkerArgs->lg_ctx->gblocksize for the same reason
+      }
+
+    }				/*  <--   if (thisWorkerArgs->lkfsflag) */
+
+    
+#ifdef DI
+    /* START DOLBYDILEQM  BLOCK */
+    
+    if (thisWorkerArgs->leqmdiflag)
+    {
+      for (int n = ch, m = 0; n < thisWorkerArgs->nsamples;
+	   n += thisWorkerArgs->nch, m++)
+      {
+	//populate bufferA -- deinterleave
+	thisWorkerArgs->lg_buffers_leqmdi->bufferA[m] = thisWorkerArgs->argbuffer[n];	//
+      }
+      if (thisWorkerArgs->lg_ctx_leqmdi->stepcounter == 0)
+      {				//this is problematic because lg_ctx is accessed by all threads / duplicate in lg_buffers outside the thread (before launching the thread)
+	//for (int n=ch, m= 0; n < thisWorkerArgs->nsamples; n += thisWorkerArgs->nch, m++) {
+	//for (int i=0; i < thisWorkerArgs->lg_ctx->gblocksize; i++) {
+	for (int i = 0;
+	     i < thisWorkerArgs->nsamples / thisWorkerArgs->nch; i++)
+	{			//this is for the case that gblocksize is incomplete like at the end of a file
+	  thisWorkerArgs->lg_buffers_leqmdi->bufferB[i] = 0.0;	//This is for the first level gate block
+	}
+      }
+      else
+      {
+	memcpy (thisWorkerArgs->lg_buffers_leqmdi->bufferB, thisWorkerArgs->lg_ctx_leqmdi->oldBufferBackup[ch], sizeof (double) * (thisWorkerArgs->nsamples / thisWorkerArgs->nch));	// instead of thisWorkerArgs->lg_ctx->gblocksize for the same reason
+      }
+
+    }				/*  <--   if (thisWorkerArgs->leqmdiflag) */
+
+    /* DOLBYDILEQM INSERT TIL HERE */
+
+#endif 
+
+
+
+
+    if (thisWorkerArgs->polyflag == 1)
+    {
+      //M_filter instead of convolution
+      M_filter (convolvedbuffer, normalizedbuffer,
+		thisWorkerArgs->nsamples / thisWorkerArgs->nch,
+		thisWorkerArgs->sample_rate);
+    }
+    else
+    {
+      //convolution M ir
+      convolv_buff (normalizedbuffer, convolvedbuffer, thisWorkerArgs->ir,
+		    thisWorkerArgs->nsamples / thisWorkerArgs->nch,
+		    thisWorkerArgs->npoints * 2);
+    }
+
+    //rectify, square und sum
+    rectify (csumandsquarebuffer, convolvedbuffer,
+	     thisWorkerArgs->nsamples / thisWorkerArgs->nch);
+    rectify (sumandsquarebuffer, normalizedbuffer,
+	     thisWorkerArgs->nsamples / thisWorkerArgs->nch);
+
+
+    //<-- insert Gate Decision here
+
+
+    //<-- calculate Speach Procentual: 
+
+    /* No more accumulating all channels, instead processing and storing results separately */
+
+    
+       accumulatech(chsumaccumulator_norm, sumandsquarebuffer, thisWorkerArgs->nsamples / thisWorkerArgs->nch);
+       accumulatech(chsumaccumulator_conv, csumandsquarebuffer, thisWorkerArgs->nsamples / thisWorkerArgs->nch);
+     
+
+
+
+    //Create a function for this also a tag so that the worker know if he has to do this or not
+
+
+    thisWorkerArgs->sc_shorttermarray[ch][thisWorkerArgs->shorttermindex] =
+      sumandshorttermavrg (csumandsquarebuffer,
+			   thisWorkerArgs->nsamples / thisWorkerArgs->nch);
+    /*
+       #ifdef DEBUG // this must be changed to print all channels
+       printf("%d: %.6f\n", thisWorkerArgs->shorttermindex, thisWorkerArgs->shorttermarray[thisWorkerArgs->shorttermindex]);
+       #endif
+     */
+
+
+    free (normalizedbuffer);
+    normalizedbuffer = NULL;
+
+    free (convolvedbuffer);
+    convolvedbuffer = NULL;
+
+
+    /* lkfs */
+
+
+    /* For LKFS according to ITU Standard:
+"The measurement interval shall be constrained such that it ends at the end of a gating block.
+Incomplete gating blocks at the end of the measurement interval are not used."
+
+But especially when linking against ffmpeg only here I have the exact number of frames/samples.
+So here I can have two cases: 1. nsamples / chs < stepi in this case nsamples should be discarded 
+2. stepi < nsamples / chs < gblock in  this case I would have a complete gating block and it should go through the while
+    */
+
+
+    /* THIS BLOCK MUST BE DOUBLED BUT ALSO SHOULD BE DEPENDENT on switch */
+    if (thisWorkerArgs->lkfsflag)
+    {
+
+      int stepi = thisWorkerArgs->lg_ctx->ops;
+      //internal copy of step_counter
+      copy_stepcounter = thisWorkerArgs->lg_ctx->stepcounter;
+      //put together samples
+      while (stepi <= thisWorkerArgs->nsamples / thisWorkerArgs->nch)
+      {				//instead of thisWorkerArgs->lg_ctx->gblocksize for block less the gblocksize at the end of file
+
+	/* // Where should I put this?
+
+	   if ((thisWorkerArgs->nsamples / thisWorkerArgs->nch) - stepi) < thisWorkerArgs->lg_ctx->ops)  { // pad buffer
+
+	   memcpy(thisWorkerArgs->lg_buffers->bufferLG, thisWorkerArgs->lg_buffers->bufferB + stepi, sizeof(double)*(thisWorkerArgs->lg_ctx->gblocksize - stepi)); //copy samples til boundary of bufferB
+	   memcpy(thisWorkerArgs->lg_buffers->bufferLG + thisWorkerArgs->lg_ctx->gblocksize - stepi, thisWorkerArgs->lg_buffers->bufferA, sizeof(double)*(thisWorkerArgs->nsamples / thisWorkerArgs->nch) - stepi);
+
+	   }
+
+	 */
+	if (thisWorkerArgs->lg_ctx->stepcounter > 0)
+	{			//that must  not be the first gate block 
+
+	  memcpy (thisWorkerArgs->lg_buffers->bufferLG, thisWorkerArgs->lg_buffers->bufferB + stepi, sizeof (double) * (thisWorkerArgs->nsamples / thisWorkerArgs->nch - stepi));	//copy samples til boundary of bufferB
+	  memcpy (thisWorkerArgs->lg_buffers->bufferLG +
+		  thisWorkerArgs->nsamples / thisWorkerArgs->nch -
+		  stepi, thisWorkerArgs->lg_buffers->bufferA,
+		  sizeof (double) * stepi);
+
+	}
+	else
+	{
+
+	  memcpy (thisWorkerArgs->lg_buffers->bufferLG,
+		  thisWorkerArgs->lg_buffers->bufferA,
+		  sizeof (double) * stepi);
+	  memset (thisWorkerArgs->lg_buffers->bufferLG + stepi, 0, sizeof (double) * (thisWorkerArgs->nsamples / thisWorkerArgs->nch - stepi));	//Check if this correct
+
+	  //for the case this is the first ... but preferably another solution
+	}
+
+
+	/* Filtering stage one and two */
+	K_filter_stage1 (thisWorkerArgs->lg_buffers->bufferSwap,
+			 thisWorkerArgs->lg_buffers->bufferLG,
+			 thisWorkerArgs->nsamples / thisWorkerArgs->nch,
+			 thisWorkerArgs->Kcoeffs);
+	K_filter_stage2 (thisWorkerArgs->lg_buffers->bufferLG,
+			 thisWorkerArgs->lg_buffers->bufferSwap,
+			 thisWorkerArgs->nsamples / thisWorkerArgs->nch,
+			 thisWorkerArgs->Kcoeffs);
+	rectify (thisWorkerArgs->lg_buffers->bufferSwap,
+		 thisWorkerArgs->lg_buffers->bufferLG,
+		 thisWorkerArgs->nsamples / thisWorkerArgs->nch);
+	double tmp_sum = msaccumulate (thisWorkerArgs->lg_buffers->bufferSwap,
+				       thisWorkerArgs->nsamples /
+				       thisWorkerArgs->nch);
+
+	pthread_mutex_lock (&mutex);
+	// this should be done under mutex conditions -> shared resources!
+	// assign provisional measure of leq (not yet gated)
+/*
+#ifdef DEBUG
+	printf
+	  ("LG block index: %d\t Channel: %d\t Sample sum: %.20f\n",
+	   copy_stepcounter, ch, tmp_sum);
+#endif
+*/
+	thisWorkerArgs->lg_ctx->LGresultarray[ch][thisWorkerArgs->shorttermindex][copy_stepcounter % thisWorkerArgs->lg_ctx->subdivs] = tmp_sum;	//<- if below relative threshold, but postpone gating for the finale calculation
+	pthread_mutex_unlock (&mutex);
+	copy_stepcounter++;
+	stepi += thisWorkerArgs->lg_ctx->ops;
+      }				/* while(stepi <= LGCtx->gblocksize)  */
+
+      pthread_mutex_lock (&mutex);
+      //copy bufferA in bufferB
+      memcpy (thisWorkerArgs->lg_ctx->oldBufferBackup[ch],
+	      thisWorkerArgs->lg_buffers->bufferA,
+	      sizeof (double) * (thisWorkerArgs->nsamples /
+				 thisWorkerArgs->nch));
+
+      pthread_mutex_unlock (&mutex);
+    }				/* if (thisWorkerArgs->lkfsflag) */
+
+   
+#ifdef DI
+
+    /* LEQMDI INSERT 2 START HERE  */
+    if (thisWorkerArgs->leqmdiflag)
+    {
+
+      int stepi = thisWorkerArgs->lg_ctx_leqmdi->ops;
+      //internal copy of step_counter
+      copy_stepcounter = thisWorkerArgs->lg_ctx_leqmdi->stepcounter;
+      //put together samples
+      while (stepi <= thisWorkerArgs->nsamples / thisWorkerArgs->nch)
+      {				//instead of thisWorkerArgs->lg_ctx->gblocksize for block less the gblocksize at the end of file
+
+	/* // Where should I put this?
+
+	   if ((thisWorkerArgs->nsamples / thisWorkerArgs->nch) - stepi) < thisWorkerArgs->lg_ctx->ops)  { // pad buffer
+
+	   memcpy(thisWorkerArgs->lg_buffers->bufferLG, thisWorkerArgs->lg_buffers->bufferB + stepi, sizeof(double)*(thisWorkerArgs->lg_ctx->gblocksize - stepi)); //copy samples til boundary of bufferB
+	   memcpy(thisWorkerArgs->lg_buffers->bufferLG + thisWorkerArgs->lg_ctx->gblocksize - stepi, thisWorkerArgs->lg_buffers->bufferA, sizeof(double)*(thisWorkerArgs->nsamples / thisWorkerArgs->nch) - stepi);
+
+	   }
+
+	 */
+	if (thisWorkerArgs->lg_ctx_leqmdi->stepcounter > 0)
+	{			//that must  not be the first gate block 
+
+	  memcpy (thisWorkerArgs->lg_buffers_leqmdi->bufferLG, thisWorkerArgs->lg_buffers_leqmdi->bufferB + stepi, sizeof (double) * (thisWorkerArgs->nsamples / thisWorkerArgs->nch - stepi));	//copy samples til boundary of bufferB
+	  memcpy (thisWorkerArgs->lg_buffers_leqmdi->bufferLG +
+		  thisWorkerArgs->nsamples / thisWorkerArgs->nch -
+		  stepi, thisWorkerArgs->lg_buffers_leqmdi->bufferA,
+		  sizeof (double) * stepi);
+
+	}
+	else
+	{
+
+	  memcpy (thisWorkerArgs->lg_buffers_leqmdi->bufferLG,
+		  thisWorkerArgs->lg_buffers_leqmdi->bufferA,
+		  sizeof (double) * stepi);
+	  memset (thisWorkerArgs->lg_buffers_leqmdi->bufferLG + stepi, 0, sizeof (double) * (thisWorkerArgs->nsamples / thisWorkerArgs->nch - stepi));	//Check if this correct
+
+	  //for the case this is the first ... but preferably another solution
+	}
+
+
+
+
+
+
+
+    if (thisWorkerArgs->polyflag == 1)
+    {
+      //M_filter instead of convolution
+      M_filter (thisWorkerArgs->lg_buffers_leqmdi->bufferSwap, thisWorkerArgs->lg_buffers_leqmdi->bufferLG,
+		thisWorkerArgs->nsamples / thisWorkerArgs->nch,
+		thisWorkerArgs->sample_rate);
+    }
+    else
+    {
+      //convolution M ir
+      convolv_buff (thisWorkerArgs->lg_buffers_leqmdi->bufferLG, thisWorkerArgs->lg_buffers_leqmdi->bufferSwap, thisWorkerArgs->ir,
+		    thisWorkerArgs->nsamples / thisWorkerArgs->nch,
+		    thisWorkerArgs->npoints * 2);
+    }
+
+	rectify (thisWorkerArgs->lg_buffers_leqmdi->bufferLG,
+		 thisWorkerArgs->lg_buffers_leqmdi->bufferSwap,
+		 thisWorkerArgs->nsamples / thisWorkerArgs->nch);
+	double tmp_sum = msaccumulate (thisWorkerArgs->lg_buffers_leqmdi->bufferLG,
+				       thisWorkerArgs->nsamples /
+				       thisWorkerArgs->nch);
+	pthread_mutex_lock (&mutex);
+	// this should be done under mutex conditions -> shared resources!
+	// assign provisional measure of leq (not yet gated)
+/*
+#ifdef DEBUG
+	printf
+	  ("LG block index: %d\t Channel: %d\t Sample sum: %.20f\n",
+	   copy_stepcounter, ch, tmp_sum);
+#endif
+*/
+	thisWorkerArgs->lg_ctx_leqmdi->LGresultarray[ch][thisWorkerArgs->shorttermindex][copy_stepcounter % thisWorkerArgs->lg_ctx_leqmdi->subdivs] = tmp_sum;	//<- if below relative threshold, but postpone gating for the finale calculation
+	pthread_mutex_unlock (&mutex);
+	copy_stepcounter++;
+	stepi += thisWorkerArgs->lg_ctx_leqmdi->ops;
+      }				/* while(stepi <= LGCtx->gblocksize)  */
+
+      pthread_mutex_lock (&mutex);
+      //copy bufferA in bufferB
+      memcpy (thisWorkerArgs->lg_ctx_leqmdi->oldBufferBackup[ch],
+	      thisWorkerArgs->lg_buffers_leqmdi->bufferA,
+	      sizeof (double) * (thisWorkerArgs->nsamples /
+				 thisWorkerArgs->nch));
+
+      pthread_mutex_unlock (&mutex);
+    }				/* if (thisWorkerArgs->lkfsflag) */
+
+    /* END LEQMDI INSERT */
+ #endif 
+
+  }				// loop through channels
+
+
+
+  if (thisWorkerArgs->lkfsflag)
+  {
+	/* following if is to avoid incrementing stepcounter in case there where not enough samples to fill a gating block */ 
+    if ((thisWorkerArgs->nsamples / thisWorkerArgs->nch) >= thisWorkerArgs->lg_ctx->ops) {
+    pthread_mutex_lock (&mutex);
+    if (copy_stepcounter % thisWorkerArgs->lg_ctx->subdivs == 0)
+    {
+      thisWorkerArgs->lg_ctx->stepcounter += thisWorkerArgs->lg_ctx->subdivs;
+    }
+    else
+    {
+      thisWorkerArgs->lg_ctx->stepcounter +=
+	copy_stepcounter % thisWorkerArgs->lg_ctx->subdivs;
+    }
+    pthread_mutex_unlock (&mutex);
+    }
+  }
+
+
+  /* LEQMDI INSERT 3 */
+
+
+#ifdef DI
+  
+  if (thisWorkerArgs->leqmdiflag)
+  {
+	/* following if is to avoid incrementing stepcounter in case there where not enough samples to fill a gating block */ 
+    if ((thisWorkerArgs->nsamples / thisWorkerArgs->nch) >= thisWorkerArgs->lg_ctx_leqmdi->ops) {
+    pthread_mutex_lock (&mutex);
+    if (copy_stepcounter % thisWorkerArgs->lg_ctx_leqmdi->subdivs == 0)
+    {
+      thisWorkerArgs->lg_ctx_leqmdi->stepcounter += thisWorkerArgs->lg_ctx_leqmdi->subdivs;
+    }
+    else
+    {
+      thisWorkerArgs->lg_ctx_leqmdi->stepcounter +=
+	copy_stepcounter % thisWorkerArgs->lg_ctx_leqmdi->subdivs;
+    }
+    pthread_mutex_unlock (&mutex);
+    }
+  }
+
+  
+  /* END LEQMDI INSERT 3 */
+#endif
+
+     pthread_mutex_lock(&mutex);
+     // this should be done under mutex conditions -> shared resources!
+     sumsamples(thisWorkerArgs->ptrtotsum, chsumaccumulator_norm, chsumaccumulator_conv, thisWorkerArgs->nsamples / thisWorkerArgs->nch);
+     pthread_mutex_unlock(&mutex);
+
+
+  free (sumandsquarebuffer);
+  sumandsquarebuffer = NULL;
+
+  free (csumandsquarebuffer);
+  csumandsquarebuffer = NULL;
+
+  free(chsumaccumulator_norm);
+  chsumaccumulator_norm=NULL;
+
+  free(chsumaccumulator_conv);
+  chsumaccumulator_conv=NULL;
+  
+  free (thisWorkerArgs->argbuffer);
+  thisWorkerArgs->argbuffer = NULL;
+  // the memory pointed to by this pointer is freed in main
+  // it is the same memory for all worker
+  // but it is necessary to set pointer to NULL otherwise free will not work later (really?)
+  thisWorkerArgs->chconf = NULL;
+  pthread_exit (0);
+
+}				//worker_function_gated2
 
 
 
@@ -4121,7 +5103,7 @@ convloglin (double *in, double *out, int points)
 {
   for (int i = 0; i < points; i++)
   {
-    out[i] = powf (10, (in[i] / 20.0));
+    out[i] = pow (10, (in[i] / 20.0));
   }
 
   return 0;
@@ -4132,7 +5114,7 @@ double
 convlinlog_single (double in)
 {
   double out;
-  out = log (in) * 20.0f;	//this is maybe not inteded? log is natural logarithm
+  out = log10(in) * 20.0f;	
   return out;
 }
 
@@ -4482,7 +5464,7 @@ freeLGBuffer (LG_Buf * pt_LG_Buf)
   free (pt_LG_Buf->bufferSwap);
   pt_LG_Buf->bufferSwap = NULL;
   free (pt_LG_Buf);
-
+  pt_LG_Buf = NULL;
 }
 
 int
@@ -4712,7 +5694,7 @@ dolbydifinalcomputation (double **sc_staa, uint8_t ** stdda, int nch,
 
 void
 lkfs_finalcomputation (LG * pt_lgctx, int *pt_chgateconf,
-		       double *pt_chgainconf, int nchannels)
+		       int nchannels)
 {
   int i_ch;
   //double gamma_A = leqmtosum(-70.0, 1);
@@ -4759,9 +5741,11 @@ lkfs_finalcomputation (LG * pt_lgctx, int *pt_chgateconf,
       }
       //Loudness without Gating (single block)
       LD_meas = -0.691 + 10 * log10 (LD_accum);
+/*
 #ifdef DEBUG
       printf ("Loudness (without Gating): %.4f\n", LD_meas);
 #endif
+*/
       if (LD_meas > gamma_A)
       {
 	ch_accumulator[i_lgb++] = LD_accum;
@@ -4905,7 +5889,7 @@ lkfs_finalcomputation (LG * pt_lgctx, int *pt_chgateconf,
 
 void
 lkfs_finalcomputation_withdolbydi (LG * pt_lgctx, int *pt_chgateconf,
-				   double *pt_chgainconf, int nchannels,
+				   int nchannels,
 				   uint8_t ** stdda, double adlgthreshold)
 {
   int i_ch;
@@ -4965,11 +5949,13 @@ lkfs_finalcomputation_withdolbydi (LG * pt_lgctx, int *pt_chgateconf,
       //Loudness without Gating (single block)
       LD_meas = -0.691 + 10 * log10 (LD_accum);
       DI_meas = -0.691 + 10 * log10 (DI_accum);
+/*
 #ifdef DEBUG
       printf
 	("Block Number: %08d, Loudness (without -70 Gating): %.4f\tDI Loudness (w/o -70 Gating): %.4f\n",
 	 i_lgb, LD_meas, DI_meas);
 #endif
+*/
       if (LD_meas > gamma_A)
       {
 	ch_accumulator[i_lgb] = LD_accum;
@@ -5026,11 +6012,13 @@ lkfs_finalcomputation_withdolbydi (LG * pt_lgctx, int *pt_chgateconf,
       //Loudness without Gating (single block)
       LD_meas = -0.691 + 10 * log10 (LD_accum);
       DI_meas = -0.691 + 10 * log10 (DI_accum);
+/*
 #ifdef DEBUG
       printf
 	("Block Number: %08d, Loudness (without -70 Gating): %.4f\tDI Loudness (w/o -70 Gating): %.4f\n",
 	 i_lgb, LD_meas, DI_meas);
 #endif
+*/
       if (LD_meas > gamma_A)
       {
 	ch_accumulator[i_lgb] = LD_accum;
@@ -5176,7 +6164,288 @@ lkfs_finalcomputation_withdolbydi (LG * pt_lgctx, int *pt_chgateconf,
 #endif
 
 
+#ifdef DI
 
+void dolbydifinalcomputation2 (LGLeqM * pt_lgctx_leqmdi, int *pt_chgateconf,
+					int nchannels,
+					uint8_t ** stdda,
+					double adlgthreshold)
+{
+
+ int i_ch;
+  //double gamma_A = leqmtosum(-70.0, 1);
+  double gamma_A = -70.0;
+  double gamma_r = -10.00;
+  double gamma_R;
+
+  /* expanding on chgateconf
+     3 not included
+     0 no gating
+     1 level gating
+     2 dialogue gating
+   */
+
+  double *ch_accumulator;	// first index channel, second threshold block
+  double *dich_accumulator;
+
+  ch_accumulator = malloc (sizeof (double) * pt_lgctx_leqmdi->totalsteps);	//or stepcounter ? or totalsteps? well totalsteps and shortperiod are calculated for a 5 hour feature in case of ffmpeg so use stepcounter later for the summing up
+  dich_accumulator = malloc (sizeof (double) * pt_lgctx_leqmdi->totalsteps);
+
+
+  int digatedsignal = 0;
+  int digatedcounter = 0;
+  int i_lgb = 0;		//level gate block index
+  double LD_accum = 0.0;
+  double LD_meas = 0.0;
+  double DI_accum = 0.0;
+  double DI_meas = 0.0;
+  int gated_A_index = 0;
+  int gated_R_index = 0;
+  //int p_sp = 0; // short period index
+  //int s_sd = 0; // subdivisions index
+  //   for (int p_sp = 0; p_sp < pt_lgctx->shortperiods; p_sp++) {
+  for (int p_sp = 0; p_sp < pt_lgctx_leqmdi->stepcounter / pt_lgctx_leqmdi->subdivs; p_sp++)
+  {
+    for (int s_sd = 0; s_sd < pt_lgctx_leqmdi->subdivs; s_sd++)
+    {
+      //Absolute gating gating
+      LD_accum = 0.0;
+      DI_accum = 0.0;
+
+      for (i_ch = 0; i_ch < nchannels; i_ch++)
+      {
+	if ((stdda[i_ch][p_sp] == 1) && (pt_chgateconf[i_ch] == 3))
+	{
+	  DI_accum += pt_lgctx_leqmdi->chgainconf[i_ch] * pt_lgctx_leqmdi->LGresultarray[i_ch][p_sp][s_sd];	// here chgain is not
+	  digatedsignal = 1;
+	}
+	LD_accum +=
+	  pt_lgctx_leqmdi->chgainconf[i_ch] *
+	  pt_lgctx_leqmdi->LGresultarray[i_ch][p_sp][s_sd];
+
+	// see p. 5 of ITU 1770-4
+      }
+
+      //Loudness without Gating (single block)
+      LD_meas = -0.691 + 10 * log10 (LD_accum);
+      DI_meas = -0.691 + 10 * log10 (DI_accum);
+/*
+#ifdef DEBUG
+      printf
+	("Block Number: %08d, Loudness (without -70 Gating): %.4f\tDI Loudness (w/o -70 Gating): %.4f\n",
+	 i_lgb, LD_meas, DI_meas);
+#endif
+*/
+      if (LD_meas > gamma_A)
+      {
+	ch_accumulator[i_lgb] = LD_accum;
+	gated_A_index++;
+      }
+      else
+      {
+	ch_accumulator[i_lgb] = 0.0;
+      }
+      if (DI_meas > gamma_A)
+      {
+	dich_accumulator[i_lgb] = DI_accum;
+	//digatedcounter++; // In this implementation counter is increased after absolute level gating, this differs from p. 17
+      }
+      else
+      {
+	dich_accumulator[i_lgb] = 0.0;
+      }
+      i_lgb++;
+      if (digatedsignal == 1)
+      {
+	digatedcounter++;	// This is the same as in p.17 Dolby Dialogue Intelligence Reference Code User's Guide
+	digatedsignal = 0;
+      }
+    }
+  }
+
+  //remainder
+  if ((pt_lgctx_leqmdi->stepcounter % pt_lgctx_leqmdi->subdivs) != 0)
+  {
+    for (int s_sd = 0; s_sd < (pt_lgctx_leqmdi->stepcounter % pt_lgctx_leqmdi->subdivs);
+	 s_sd++)
+    {
+      //Absolute gating gating
+      LD_accum = 0.0;
+      //LD_meas = 0.0;
+      DI_accum = 0.0;
+      for (i_ch = 0; i_ch < nchannels; i_ch++)
+      {
+	if ((stdda[i_ch][pt_lgctx_leqmdi->stepcounter / pt_lgctx_leqmdi->subdivs] ==
+	     1) && (pt_chgateconf[i_ch] == 3))
+	{
+	  DI_accum += pt_lgctx_leqmdi->chgainconf[i_ch] * pt_lgctx_leqmdi->LGresultarray[i_ch][pt_lgctx_leqmdi->stepcounter / pt_lgctx_leqmdi->subdivs][s_sd];	// here chgain is not
+	  digatedsignal = 1;
+	}
+
+	LD_accum +=
+	  pt_lgctx_leqmdi->chgainconf[i_ch] *
+	  pt_lgctx_leqmdi->LGresultarray[i_ch][pt_lgctx_leqmdi->stepcounter /
+					pt_lgctx_leqmdi->subdivs][s_sd];
+
+	// see p. 5 of ITU 1770-4
+      }
+      //Loudness without Gating (single block)
+      LD_meas = -0.691 + 10 * log10 (LD_accum);
+      DI_meas = -0.691 + 10 * log10 (DI_accum);
+/*
+#ifdef DEBUG
+      printf
+	("Block Number: %08d, Loudness (without -70 Gating): %.4f\tDI Loudness (w/o -70 Gating): %.4f\n",
+	 i_lgb, LD_meas, DI_meas);
+#endif
+*/
+      if (LD_meas > gamma_A)
+      {
+	ch_accumulator[i_lgb] = LD_accum;
+	gated_A_index++;
+      }
+      else
+      {
+	ch_accumulator[i_lgb] = 0.0;
+      }				//
+      if (DI_meas > gamma_A)
+      {
+	dich_accumulator[i_lgb] = DI_accum;
+	//digatedcounter++; // In this implementation counter is increased after absolute level gating, this differs from p. 17
+      }
+      else
+      {
+	dich_accumulator[i_lgb] = 0.0;
+      }
+      i_lgb++;
+      if (digatedsignal == 1)
+      {
+	digatedcounter++;	// This is the same as in p.17 Dolby Dialogue Intelligence Reference Code User's Guide
+	digatedsignal = 0;
+      }
+
+    }
+
+  }
+
+  // Relative Gating
+
+
+  double gated_A_accum = 0.0;
+  for (i_lgb = 0; i_lgb < pt_lgctx_leqmdi->stepcounter; i_lgb++)
+  {
+    gated_A_accum += ch_accumulator[i_lgb];
+  }
+
+
+  gamma_R =
+    -0.691 + 10 * log10 (gated_A_accum / ((double) gated_A_index)) - 10;
+
+  i_lgb = 0;
+
+  for (int p_sp = 0; p_sp < pt_lgctx_leqmdi->stepcounter / pt_lgctx_leqmdi->subdivs; p_sp++)
+  {
+    for (int s_sd = 0; s_sd < pt_lgctx_leqmdi->subdivs; s_sd++)
+    {
+      //Relative gating
+      LD_accum = 0.0;
+      LD_meas = 0.0;
+      for (i_ch = 0; i_ch < nchannels; i_ch++)
+      {
+	LD_accum +=
+	  pt_lgctx_leqmdi->chgainconf[i_ch] *
+	  pt_lgctx_leqmdi->LGresultarray[i_ch][p_sp][s_sd];
+
+	// see p. 5 of ITU 1770-4
+      }
+      //Loudness without Gating (single block)
+      LD_meas = -0.691 + 10 * log10 (LD_accum);
+      if (LD_meas > gamma_R)
+      {
+	ch_accumulator[i_lgb] = LD_accum;
+	gated_R_index++;
+      }
+      else
+      {
+	ch_accumulator[i_lgb] = 0.0;
+      }				//
+      i_lgb++;
+    }
+  }
+
+  //remainder
+
+  //remainder
+  if ((pt_lgctx_leqmdi->stepcounter % pt_lgctx_leqmdi->subdivs) != 0)
+  {
+    for (int s_sd = 0; s_sd < (pt_lgctx_leqmdi->stepcounter % pt_lgctx_leqmdi->subdivs);
+	 s_sd++)
+    {
+      //Absolute gating gating
+      LD_accum = 0.0;
+      //LD_meas = 0.0; 
+      for (i_ch = 0; i_ch < nchannels; i_ch++)
+      {
+	LD_accum +=
+	  pt_lgctx_leqmdi->chgainconf[i_ch] *
+	  pt_lgctx_leqmdi->LGresultarray[i_ch][pt_lgctx_leqmdi->stepcounter /
+					pt_lgctx_leqmdi->subdivs][s_sd];
+
+	// see p. 5 of ITU 1770-4
+      }
+      //Loudness without Gating (single block)
+      LD_meas = -0.691 + 10 * log10 (LD_accum);
+      if (LD_meas > gamma_R)
+      {
+	ch_accumulator[i_lgb] = LD_accum;
+	gated_R_index++;
+      }
+      else
+      {
+	ch_accumulator[i_lgb] = 0.0;
+      }				//
+      i_lgb++;
+    }
+  }
+
+  double DI_LKFS_accum = 0.0;
+  double LKFS_accum = 0.0;
+  double LKFS;
+  double DILKFS;
+  double dialoguepercentage;
+
+  for (i_lgb = 0; i_lgb < pt_lgctx_leqmdi->stepcounter; i_lgb++)
+  {
+    LKFS_accum += ch_accumulator[i_lgb];
+  }
+  LKFS = 10 * log10 (LKFS_accum / ((double) gated_R_index)); // not taking the square root because multiplying by 10, it is indeed power
+
+  printf ("Leq(M,LG/DI)FS: %.4f\n", LKFS);
+  printf ("Leq(M,LG/DI): %.4f\n", LKFS + 108.010299957);
+  dialoguepercentage =
+    ((double) digatedcounter) / ((double) pt_lgctx_leqmdi->stepcounter) * 100.00;
+
+  printf ("Dialogue Percentage: %.2f %%\n", dialoguepercentage);
+
+  if (dialoguepercentage >= adlgthreshold)
+  {
+    for (i_lgb = 0; i_lgb < pt_lgctx_leqmdi->stepcounter; i_lgb++)
+    {
+      DI_LKFS_accum += dich_accumulator[i_lgb];
+    }
+    DILKFS = 10 * log10 (DI_LKFS_accum / ((double) digatedcounter)); // it is power
+    printf ("Leq(M,DI)FS: %.4f\n", DILKFS);
+    printf ("Leq(M,DI): %.4f\n", DILKFS + 108.010299957);
+  }
+  free (ch_accumulator);
+  free (dich_accumulator);	
+
+
+
+}
+
+
+#endif
 
 
 void
@@ -5853,12 +7122,129 @@ M_filter (double *smp_out, double *smp_in, int samples, int samplerate)
 }
 
 
+ TruePeak * init_truepeak_ctx( int ch, int os, int taps ) {
+   TruePeak * tp = malloc(sizeof(TruePeak));
+   tp->vector = malloc(sizeof(double)*ch);
+   for (int i=0; i < ch; i++) {
+     tp->vector[i] = 0.0;
+   }
+   tp->oversampling_ratio = os;
+   tp->filtertaps = taps;
+   //Coefficients will be initialized by a dedicated function
+   return tp;
+ }
+
+ int freetruepeak(TruePeak * tp) {
+   free(tp->vector);
+   tp->vector = NULL;
+   free(tp->filter_coeffs);
+   tp->filter_coeffs = NULL;
+   free(tp);
+ }
+
+ 
+ double truepeakcheck(double * in_buf, int ns, double truepeak, int os_ratio, int filtertaps, double * coeff_vector) {
+
+   /*
+     
+
+     Samples are from a single channel
+
+     - scale by -12.04 dB
+     - oversample x4
+     - lowpass filter
+     - rectify
+     - 20 log
+     - scale by +12.04
+
+    */
 
 
+   double * os_buffer = malloc(sizeof(double)*ns*os_ratio);
+   double * interp_buffer = calloc(ns*os_ratio,sizeof(double)); 
+   double att_in_lin = pow(10,(-12.04 / 20));
+   //double boost_out = +12.04;
+	/*
+   double poly_phase1 [] = { 0.0017089843750, 0.0109863281250, −0.0196533203125, 0.0332031250000, −0.0594482421875, 0.1373291015625,0.9721679687500,  −0.1022949218750, 0.0476074218750, −0.0266113281250, 0.0148925781250, −0.0083007812500};
+   double poly_phase2 [] = {−0.0291748046875,0.0292968750000, −0.0517578125000, 0.0891113281250, −0.1665039062500,  0.4650878906250, 0.7797851562500,   −0.2003173828125, 0.1015625000000, −0.0582275390625, 0.0330810546875, −0.0189208984375};
+   double poly_phase3 [] = {−0.0189208984375,   0.0330810546875, −0.0582275390625,  0.1015625000000,  −0.2003173828125,  0.7797851562500,  0.4650878906250,  −0.1665039062500, 0.0891113281250,  −0.0517578125000, 0.0292968750000,  −0.0291748046875};
+   double poly_phase4 [] = { −0.0083007812500, 0.0148925781250, −0.0266113281250, 0.0476074218750, −0.1022949218750, 0.9721679687500, 0.1373291015625, −0.0594482421875, 0.0332031250000, −0.0196533203125, 0.0109863281250, 0.00170898437};
+
+*/
+   
+   /*attenuate and oversample (extend filling with zeros) buffer*/
+   int i;
+   int j;
+   for (i = 0, j = 0; i < ns*os_ratio; i += os_ratio, j++) {
+     os_buffer[i] = att_in_lin * in_buf[j];
+       for (int k = 1; k < os_ratio; k++) {
+	 os_buffer[i + k] = 0.0;
+       }
+      
+   }
+
+   /* low pass filter */
+
+   for (int i = 0; i < (ns * os_ratio); i++) {
+     for (int j = 0; j < min(i+1,filtertaps); j++) {
+	 interp_buffer[i] += coeff_vector[j] * os_buffer[i-j];
+/*
+#ifdef DEBUG
+printf("Sample: %08d\tcoeff.: %03d\t value: %.10f\n", i, j, os_buffer[i]);
+#endif
+*/
+     }
+   }
+
+   for( int m = 0; m < (ns * os_ratio); m++) {
+/*
+#ifdef DEBUG
+printf("Old Truepeak: %.4f\n", truepeak);
+printf("Sample value: %.8f\n", os_buffer[m]);
+#endif	
+*/
+     truepeak = max(interp_buffer[m]*interp_buffer[m], truepeak); //rectify
+
+   }
+   
+  free (os_buffer);
+  free (interp_buffer);
+   return truepeak;
+ }
 
 
+/* Calculate coefficients for interpolation filter - lowpass filter after upsampling */
+double * calc_lp_os_coeffs(int samplerate, int os_factor, int taps) 
+{
 
+	double * coeff_vector = calloc(taps,sizeof(double)); // will be freed from function that free TruePeak Context
 
+double nearzero = 0.000001;
+
+ for (int i=0; i < taps; i++) {
+	double m = i - (taps - 1) / 2.0;
+	double c = 1.0; 
+	if (fabs(m) >= nearzero) {
+		c = sin(m * M_PI / os_factor) / (m * M_PI / os_factor);
+	/* Should windowing be applied? Yes!! */
+	c = c * (0.5 * (1 - cos( 2 * M_PI * i / (taps -1))));
+	// To populate a polyphase I should do that otherwise
+	if (fabs(c) >= nearzero) {
+		coeff_vector[i] = c;
+	}
+}	
+
+} 
+/*
+#ifdef DEBUG
+printf("Coefficients for low pass filter with %d taps\n", taps);
+for (int i = 0; i < taps; i++) {
+printf("%.8f\n", coeff_vector[i]);
+}
+#endif
+*/
+return coeff_vector;
+}
 
 
 
@@ -5868,13 +7254,15 @@ M_filter (double *smp_out, double *smp_in, int samples, int samplerate)
       - Look at the notes from Zurich
       - implement overlapping by percentual also for DolbyDI integration (render it modifiable)
       - implement level gating indipendent from dolby DI (at present can only be combined with dolbydi)
-      - implement the A and C weightings
+      - implement the A and C weightings for Leq. I could even switch from one or the other and various combinations
       - I should tend at using a single worker_function ( apart from di_worker_function for preprocessing )
       - delete workingbranch on gitlab
       - train tensorflow model for DI (I could use trailer for the training, automate data extraction)
       - add switch for printing out detailed DI information
       - report discarded samples for LKFS measurement
       - implement TruePeak according to ITU
-      - implement Leq(M) according to LKFS logic with and without gating
+      - implement Leq(M) according to LKFS logic with and without gating - worker_function_gated2
       - test audio data with only a single subdivision (single full gating Block at the end instead of say four)
-    */
+      - LKFS premultiply a and b coefficients of the two filters instead of applying sequencially the 2 filters - in principle is clear
+
+*/
