@@ -4132,7 +4132,7 @@ if (leqmlog)
 #elif defined SNDFILELIB
     double checkleqm = 10 * log10( accumulator / (((double) (numbershortperiods  - 1)) + ((double) totsum->remainder_samples) / buffersizesamples)) + 108.010299957;
     printf ("Buffersize in samples per channel is: %d\n", buffersizesamples / sfinfo.channels);
-    printf  ("Remainder samples in the last buffer are: %d\n", totsum->remainder_samples / sfinfo.channels);
+    printf  ("Remainder samples in the last buffer are: %d\n",(int) (totsum->remainder_samples / sfinfo.channels));
     printf ("Number of short period (buffers including last not full one) is: %d\n", numbershortperiods);
 #endif
     printf ("Check Leq(M) from short term discrete accumulation: %.4f\n", checkleqm);
