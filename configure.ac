@@ -10,8 +10,9 @@ AC_CONFIG_HEADERS([config.h])
 # Checks for programs.
 AC_PROG_CC
 
-
+CFLAGS="$CFLAGS -I/usr/include/ffmpeg"
 CFLAGS="$CFLAGS -I/usr/include/di"
+
 # CXXFLAGS="$CXXFLAGS -I/opt/local/include"
 LDFLAGS="$LDFLAGS -L/usr/lib/di"
 
@@ -42,7 +43,7 @@ AC_CHECK_LIB([di], [di_init])
 
 
 # Checks for header files.
-AC_CHECK_HEADERS([stdlib.h string.h sys/param.h unistd.h di/di.h stdint.h])
+AC_CHECK_HEADERS([stdlib.h string.h sys/param.h unistd.h di/di.h stdint.h libavformat/format.h libavcodec/avcodec.h libavutil/avutil.h libavutil/assert.h sndfile.h])
 
 # Checks for typedefs, structures, and compiler characteristics.
 AC_TYPE_INT16_T
