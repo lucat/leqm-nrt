@@ -1916,8 +1916,8 @@ main (int argc, const char **argv)
 	  LGCtxLeqMDI->chgainconf[1] = 1;
 	  LGCtxLeqMDI->chgainconf[2] = 1;
 	  LGCtxLeqMDI->chgainconf[3] = 0;
-	  LGCtxLeqMDI->chgainconf[4] = 1.41;
-	  LGCtxLeqMDI->chgainconf[5] = 1.41;
+	  LGCtxLeqMDI->chgainconf[4] = 1;
+	  LGCtxLeqMDI->chgainconf[5] = 1;
 
 	  LGCtxLeqMDI->chgateconf[0] = 3;
 	  LGCtxLeqMDI->chgateconf[1] = 3;
@@ -2003,8 +2003,8 @@ main (int argc, const char **argv)
 	  LGCtxLeqMDI->chgainconf[1] = 1;
 	  LGCtxLeqMDI->chgainconf[2] = 1;
 	  LGCtxLeqMDI->chgainconf[3] = 0;
-	  LGCtxLeqMDI->chgainconf[4] = 1.41;
-	  LGCtxLeqMDI->chgainconf[5] = 1.41;
+	  LGCtxLeqMDI->chgainconf[4] = 1;
+	  LGCtxLeqMDI->chgainconf[5] = 1;
 
 	  LGCtxLeqMDI->chgateconf[0] = 3;
 	  LGCtxLeqMDI->chgateconf[1] = 3;
@@ -2407,7 +2407,7 @@ main (int argc, const char **argv)
 			      /* Loop through channels in a short period. This loop is happening in the single threads wenn actual measuring processing takes place */
 			      /* My understanding is that DI cannot use a 75% overlap of the samples, so one cannot really parallelize inside a single channel, but only between the channels. So the parallelization should be limited by the number of channels! Is it so at present? */
 
-			      for (int ch_index = 0; ch_index < nchannels;
+			      for (int ch_index = 0; ch_index < nchannels; //cannot be more than channel because per di_instance data must be coming serially
 				   ch_index++)
 				{
 				  //printf("Internal 3 loop %d\n", myloopcounter++);
@@ -2469,7 +2469,7 @@ main (int argc, const char **argv)
 				    (unsigned int)
 				    deintsamples (WorkerArgsArray[worker_id]->
 						  di_argbuffer,
-						  buffersizesamplesdi, buffer,
+						  buffersizesamplesdi, buffer, //buffersizesamplesdi, buffer,
 						  ch_index, nchannels);
 				  //memcpy(WorkerArgsArray[worker_id]->argbuffer, (void *)buffer, buffersizesamples*sizeof(double));
 				  //pthread_attr_t attr;
@@ -2482,9 +2482,9 @@ main (int argc, const char **argv)
 
 
 				  //   if (worker_id == numCPU) { //<-- No, see above, this cannot work like that! it must be limited by channel number not CPUs
-				  if (worker_id == min (nchannels, numCPU))
+				  if (worker_id == min(nchannels, numCPU))
 				    {
-				      worker_id = 0;
+				      
 				      //maybe here wait for all cores to output before going on
 				      // for (int idxcpu = 0; idxcpu < numCPU; idxcpu++) { //<-- Here the same!
 				      for (int idxcpu = 0;
@@ -2499,7 +2499,7 @@ main (int argc, const char **argv)
 					  free (WorkerArgsArray[idxcpu]);
 					  WorkerArgsArray[idxcpu] = NULL;
 					}
-
+				      worker_id = 0;
 				    }	//if (worker_id == nchannels)
 
 				}	// loop through channels for preprocessing with DI
@@ -2642,7 +2642,7 @@ main (int argc, const char **argv)
 	      WorkerArgsArray[worker_id]->samples_read_array[ch_index] =
 		(unsigned int)
 		deintsamples (WorkerArgsArray[worker_id]->di_argbuffer,
-			      buffersizesamplesdi, buffer, ch_index,
+			      buffersizesamplesdi, buffer, ch_index, //buffersizesamplesdi, buffer, ch_index,
 			      nchannels);
 	      //   memcpy(WorkerArgsArray[worker_id]->argbuffer, (void *)buffer, copiedsamples*sizeof(double));
 	      //pthread_attr_t attr;
@@ -2742,7 +2742,7 @@ main (int argc, const char **argv)
 	  WorkerArgsArray[worker_id]->samples_read_array[ch_index] =
 	    (unsigned int)
 	    deintsamples (WorkerArgsArray[worker_id]->di_argbuffer,
-			  buffersizesamplesdi, buffer, ch_index, nchannels);
+			  buffersizesamplesdi, buffer, ch_index, nchannels); //buffersizesamplesdi, buffer, ch_index, nchannels);
 	  //pthread_attr_t attr;
 	  //pthread_attr_init (&attr);
 	  /*
@@ -2759,9 +2759,9 @@ main (int argc, const char **argv)
 	  worker_id++;
 
 	  //if (worker_id == numCPU) { <-- See above!
-	  if (worker_id == min (nchannels, numCPU))
+	  if (worker_id == min(nchannels,numCPU)) //this will present channel deserialization at thread level but also the possibility that numCPU < nchannels
 	    {
-	      worker_id = 0;
+	     
 	      //maybe here wait for all cores to output before going on
 	      //for (int idxcpu = 0; idxcpu < numCPU; idxcpu++) { <-- See above
 	      for (int idxcpu = 0; idxcpu < min (nchannels, numCPU); idxcpu++)
@@ -2772,7 +2772,7 @@ main (int argc, const char **argv)
 		  free (WorkerArgsArray[idxcpu]);
 		  WorkerArgsArray[idxcpu] = NULL;
 		}
-
+	      worker_id = 0;
 	    }			// if (worker_id == numCPU)
 
 
@@ -3228,10 +3228,12 @@ while (av_read_frame (formatContext, &readingPacket) == 0)
 			  }
 #endif
 			worker_id++;
+
+/*
 #ifdef DEBUG
 			printf ("Worker: %d\n", worker_id);
 #endif
-
+*/
 
 
 			if (worker_id == numCPU)	// add condition if buffer is full and file is at the end
@@ -4132,7 +4134,7 @@ if (leqmlog)
 #elif defined SNDFILELIB
     double checkleqm = 10 * log10( accumulator / (((double) (numbershortperiods  - 1)) + ((double) totsum->remainder_samples) / buffersizesamples)) + 108.010299957;
     printf ("Buffersize in samples per channel is: %d\n", buffersizesamples / sfinfo.channels);
-    printf  ("Remainder samples in the last buffer are: %d\n",(int) (totsum->remainder_samples / sfinfo.channels));
+    printf  ("Remainder samples in the last buffer are: %d\n", totsum->remainder_samples / sfinfo.channels);
     printf ("Number of short period (buffers including last not full one) is: %d\n", numbershortperiods);
 #endif
     printf ("Check Leq(M) from short term discrete accumulation: %.4f\n", checkleqm);
@@ -5117,13 +5119,13 @@ worker_function_gated2 (void *argstruct)
 	      //pthread_mutex_lock (&mutex); //NOT NECESSARY ANYMORE
 	      // this should be done under mutex conditions -> shared resources!
 	      // assign provisional measure of leq (not yet gated)
-	      
+	     /* 
 	         #ifdef DEBUG
 	         printf
 	         ("LG block index: %d\t Channel: %d\t Sample sum: %.20f\n",
 	         copy_stepcounter, ch, tmp_sum);
 	         #endif
-	       
+	       */
 	      thisWorkerArgs->lg_ctx->LGresultarray[ch][thisWorkerArgs->shorttermindex][copy_stepcounter % thisWorkerArgs->lg_ctx->subdivs] = tmp_sum;	//<- if below relative threshold, but postpone gating for the finale calculation
 	      //pthread_mutex_unlock (&mutex);
 	      copy_stepcounter++;
@@ -5223,18 +5225,18 @@ worker_function_gated2 (void *argstruct)
 		       thisWorkerArgs->lg_buffers_leqmdi->bufferLG,
 		       thisWorkerArgs->nsamples / thisWorkerArgs->nch);
 	      double tmp_sum =
-		msaccumulate (thisWorkerArgs->lg_buffers_leqmdi->bufferLG,
+		msaccumulate (thisWorkerArgs->lg_buffers_leqmdi->bufferSwap,
 			      thisWorkerArgs->nsamples / thisWorkerArgs->nch);
 	      //pthread_mutex_lock (&mutex); //NO MORE NECESSARY
 	      // this should be done under mutex conditions -> shared resources!
 	      // assign provisional measure of leq (not yet gated)
-	      
+	     /* 
 	         #ifdef DEBUG
 	         printf
 	         ("LG Leq(M,DI) block index: %d\t Channel: %d\t Sample sum: %.20f\n",
 	         copy_stepcounter_leqmdi, ch, tmp_sum);
 	         #endif
-	       
+	       */
 	      thisWorkerArgs->lg_ctx_leqmdi->LGresultarray[ch][thisWorkerArgs->shorttermindex][copy_stepcounter_leqmdi % thisWorkerArgs->lg_ctx_leqmdi->subdivs] = tmp_sum;	//<- if below relative threshold, but postpone gating for the finale calculation
 	      //pthread_mutex_unlock (&mutex);
 	      copy_stepcounter_leqmdi++;
@@ -6104,13 +6106,25 @@ deintsamples (float *deintbuffer, int buffersizeframes, double *intbuffer,
   for (int n = channel, m = 0; n < buffersizesamples;
        n += tot_channel_numb, m++)
     {
+/*
+#ifdef DEBUG
 
+  printf("%.16f\n", intbuffer[n]);
+
+#endif
+*/
       deintbuffer[m] = (float) intbuffer[n];
-      copied_samples = m;
+      copied_samples = m; //this should be +1 and it should be possible to avoid it
+/*      
+#ifdef DEBUG
+      printf(" %.8f\n", deintbuffer[m]);
+#endif
+  */    
+
     }
 
 
-  return copied_samples;
+  return copied_samples + 1; //because index start with 0
 
 }
 
@@ -6240,7 +6254,7 @@ dolbydifinalcomputation (double **sc_staa, uint8_t ** stdda, int nch,
 		}
 	    }
 	  if ((chgateconfarray[j] == 2) && (stdda[j][i] == 1))
-	    {			//That is if channel configured for DI and DI decision "Dialogue/Other" is "Dialog" 
+	    {			//That is if channel configured for DI and DI decision "Speech/Other" is "Dialog" 
 	      //spaccumulator += sc_staa[j][i];
 	      chgateor = 1;
 
@@ -6495,6 +6509,7 @@ lkfs_finalcomputation_withdolbydi (LG * pt_lgctx, int *pt_chgateconf,
 
   int digatedsignal = 0;
   int digatedcounter = 0;
+  int digatedcounter_percent = 0;
   int i_lgb = 0;		//level gate block index
   double LD_accum = 0.0;
   double LD_meas = 0.0;
@@ -6549,7 +6564,9 @@ lkfs_finalcomputation_withdolbydi (LG * pt_lgctx, int *pt_chgateconf,
 	  if (DI_meas > gamma_A)
 	    {
 	      dich_accumulator[i_lgb] = DI_accum;
-	      //digatedcounter++; // In this implementation counter is increased after absolute level gating, this differs from p. 17
+	      digatedcounter++; // In this implementation counter is increased after absolute level gating, this differs from p. 17. No re-reading
+	      // I think that according to the integration documentation one has to have two counters, one for the mean the other for the percentage
+	      // because fpr the mean the counter must be incremented here, otherwise the measure get down arbitrarily for the blocks below absolute threshold
 	    }
 	  else
 	    {
@@ -6558,7 +6575,7 @@ lkfs_finalcomputation_withdolbydi (LG * pt_lgctx, int *pt_chgateconf,
 	  i_lgb++;
 	  if (digatedsignal == 1)
 	    {
-	      digatedcounter++;	// This is the same as in p.17 Dolby Dialogue Intelligence Reference Code User's Guide
+	      digatedcounter_percent++;	// This is the same as in p.17 Dolby Dialogue Intelligence Reference Code User's Guide
 	      digatedsignal = 0;
 	    }
 	}
@@ -6612,7 +6629,7 @@ lkfs_finalcomputation_withdolbydi (LG * pt_lgctx, int *pt_chgateconf,
 	  if (DI_meas > gamma_A)
 	    {
 	      dich_accumulator[i_lgb] = DI_accum;
-	      //digatedcounter++; // In this implementation counter is increased after absolute level gating, this differs from p. 17
+	      digatedcounter++; // In this implementation counter is increased after absolute level gating, this differs from p. 17. But I changed my mind rereading and added a second counter see above.
 	    }
 	  else
 	    {
@@ -6621,7 +6638,7 @@ lkfs_finalcomputation_withdolbydi (LG * pt_lgctx, int *pt_chgateconf,
 	  i_lgb++;
 	  if (digatedsignal == 1)
 	    {
-	      digatedcounter++;	// This is the same as in p.17 Dolby Dialogue Intelligence Reference Code User's Guide
+	      digatedcounter_percent++;	// This is the same as in p.17 Dolby Dialogue Intelligence Reference Code User's Guide
 	      digatedsignal = 0;
 	    }
 
@@ -6724,9 +6741,9 @@ lkfs_finalcomputation_withdolbydi (LG * pt_lgctx, int *pt_chgateconf,
   printf ("LKFS: %.4f\n", LKFS);
 
   dialoguepercentage =
-    ((double) digatedcounter) / ((double) pt_lgctx->stepcounter) * 100.00;
+    ((double) digatedcounter_percent) / ((double) pt_lgctx->stepcounter) * 100.00;
 
-  printf ("Dialogue Percentage is: %.2f %%\n", dialoguepercentage);
+  printf ("Speech Percentage is: %.2f %%\n", dialoguepercentage);
 
   if (dialoguepercentage >= adlgthreshold)
     {
@@ -6776,6 +6793,7 @@ dolbydifinalcomputation2 (LGLeqM * pt_lgctx_leqmdi, int *pt_chgateconf,
 
   int digatedsignal = 0;
   int digatedcounter = 0;
+  int digatedcounter_percent = 0;
   int i_lgb = 0;		//level gate block index
   double LD_accum = 0.0;
   double LD_meas = 0.0;
@@ -6831,7 +6849,7 @@ dolbydifinalcomputation2 (LGLeqM * pt_lgctx_leqmdi, int *pt_chgateconf,
 	  if (DI_meas > gamma_A)
 	    {
 	      dich_accumulator[i_lgb] = DI_accum;
-	      //digatedcounter++; // In this implementation counter is increased after absolute level gating, this differs from p. 17
+	      digatedcounter++; // In this implementation counter is increased after absolute level gating, this differs from p. 17
 	    }
 	  else
 	    {
@@ -6840,7 +6858,7 @@ dolbydifinalcomputation2 (LGLeqM * pt_lgctx_leqmdi, int *pt_chgateconf,
 	  i_lgb++;
 	  if (digatedsignal == 1)
 	    {
-	      digatedcounter++;	// This is the same as in p.17 Dolby Dialogue Intelligence Reference Code User's Guide
+	      digatedcounter_percent++;	// This is the same as in p.17 Dolby Dialogue Intelligence Reference Code User's Guide
 	      digatedsignal = 0;
 	    }
 	}
@@ -6899,7 +6917,7 @@ dolbydifinalcomputation2 (LGLeqM * pt_lgctx_leqmdi, int *pt_chgateconf,
 	  if (DI_meas > gamma_A)
 	    {
 	      dich_accumulator[i_lgb] = DI_accum;
-	      //digatedcounter++; // In this implementation counter is increased after absolute level gating, this differs from p. 17
+	      digatedcounter++; // In this implementation counter is increased after absolute level gating, this differs from p. 17
 	    }
 	  else
 	    {
@@ -6908,7 +6926,7 @@ dolbydifinalcomputation2 (LGLeqM * pt_lgctx_leqmdi, int *pt_chgateconf,
 	  i_lgb++;
 	  if (digatedsignal == 1)
 	    {
-	      digatedcounter++;	// This is the same as in p.17 Dolby Dialogue Intelligence Reference Code User's Guide
+	      digatedcounter_percent++;	// This is the same as in p.17 Dolby Dialogue Intelligence Reference Code User's Guide
 	      digatedsignal = 0;
 	    }
 
@@ -7015,10 +7033,10 @@ dolbydifinalcomputation2 (LGLeqM * pt_lgctx_leqmdi, int *pt_chgateconf,
   printf ("Leq(M,LG)FS: %.4f\n", LGLEQM);
   printf ("Leq(M,LG): %.4f\n", LGLEQM + 108.010299957);
   dialoguepercentage =
-    ((double) digatedcounter) / ((double) pt_lgctx_leqmdi->stepcounter) *
+    ((double) digatedcounter_percent) / ((double) pt_lgctx_leqmdi->stepcounter) *
     100.00;
 
-  printf ("Dialogue Percentage: %.2f %%\n", dialoguepercentage);
+  printf ("Speech Percentage: %.2f %%\n", dialoguepercentage);
 
   if (dialoguepercentage >= adlgthreshold)
     {
@@ -7888,4 +7906,17 @@ calc_lp_os_coeffs (int samplerate, int os_factor, int taps)
    x Found out that with normal default measurement the program measure slightly differently with changing number of cpus: this is probably because of deserialization. This must be cured
    x Also logging seems to be dependent on number of cpus: for ex. if 2 cpus buffersize interval ist doubled, with 3 tripled and so on.
    x Buffer B in LKFS must be scorporated from worker functions for problematic signalling of serialization and no present speed up with multiple cpus.
-   */
+   
+STRAGE THINGS HAPPENING:
+
+- opening files with SNDFILE or FFMPEG produces the same LKFS and Leq(M) but different DI measurement including speech percentage !! Why?
+Well, as DI has an automatic gaining system it is quite resilient with regard to changes of gain but very sensitive to the smallest changes 
+in values in lower significant digits. As FFMPEG and SNDFILE do not return exactly the same normalized values (differences after the 9th oder 10th 
+decimal digit) Dolby DI produces different results if opening files with sndfile or ffmpeg. So if this is the complete explication, implementing
+a scaling independent from the used library should solve the issue.
+
+- Leq(M), LKFS and also LKFS(DI) measurements scales perfectly (Leq(M) and LKFS) or almost (LKFS(DI), but Leq(M,LG) seems to half-scale, meaning that a reduction in 6 dB produces a reduction of only 3 dB. Why?
+This should be an error somewhere.
+
+- LKFS(DI) does not seems to pass the conformance test, as it measure 25.12 instead of 24 with ffmpeg and 25.21 with sndfile. But I doubt that this is possibly true because 23.1 is LKFS and there are passages without dialogue in the conformance test file, so how can this possibly be true? It could be that the problem has also to do with the metode used for opening wav files and normalizing (this could be checked to track down also the different dialogue percentages with different audio libraries.
+*/
