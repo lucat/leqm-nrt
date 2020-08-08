@@ -87,7 +87,7 @@
 
 
 #ifdef DI
-#include "di.h"
+#include "di/di.h"
 
 /* Input frame size, in samples */
 //But this has nothing to do with the actual buffer used
@@ -4134,7 +4134,7 @@ if (leqmlog)
 #elif defined SNDFILELIB
     double checkleqm = 10 * log10( accumulator / (((double) (numbershortperiods  - 1)) + ((double) totsum->remainder_samples) / buffersizesamples)) + 108.010299957;
     printf ("Buffersize in samples per channel is: %d\n", buffersizesamples / sfinfo.channels);
-    printf  ("Remainder samples in the last buffer are: %d\n", totsum->remainder_samples / sfinfo.channels);
+    printf  ("Remainder samples in the last buffer are: %d\n", (int) (totsum->remainder_samples / sfinfo.channels));
     printf ("Number of short period (buffers including last not full one) is: %d\n", numbershortperiods);
 #endif
     printf ("Check Leq(M) from short term discrete accumulation: %.4f\n", checkleqm);
@@ -7885,6 +7885,8 @@ calc_lp_os_coeffs (int samplerate, int os_factor, int taps)
 
    Things to do:
    - rework autotools and autoconfig to be sure it works on multiple platforms: see also problem with usability presence.
+   - wouldn't it be better to use cmake  instead of autotools?
+   - also depending on ffmpeg version the files should be opened differently
    - Look at the question of the first few milliseconds of DI output
    - last change because of ffmpeg 4.0. Also test actual software on older ffmpeg installations.
    - Look at automatic gate switching and threshold adjustments for leqm DI
@@ -7907,7 +7909,7 @@ calc_lp_os_coeffs (int samplerate, int os_factor, int taps)
    x Also logging seems to be dependent on number of cpus: for ex. if 2 cpus buffersize interval ist doubled, with 3 tripled and so on.
    x Buffer B in LKFS must be scorporated from worker functions for problematic signalling of serialization and no present speed up with multiple cpus.
    
-STRAGE THINGS HAPPENING:
+STRANGE THINGS HAPPENING:
 
 - opening files with SNDFILE or FFMPEG produces the same LKFS and Leq(M) but different DI measurement including speech percentage !! Why?
 Well, as DI has an automatic gaining system it is quite resilient with regard to changes of gain but very sensitive to the smallest changes 
